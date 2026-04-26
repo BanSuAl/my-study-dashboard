@@ -28,8 +28,8 @@ DEFAULT_DATA = {
         "Ch9 L15": False
     },
     "CHEM 311": {
-        "Ch 1 L1": False,
-        "Ch 1 L2": False,
+        "Ch 35": False,
+        "Ch 36": False,
         "Ch 2 L1": False
     },
     "CHE 309": {
