@@ -28,9 +28,25 @@ DEFAULT_DATA = {
         "Ch9 L15": False
     },
     "CHEM 311": {
-        "Ch 35": False,
-        "Ch 36": False,
-        "Ch 2 L1": False
+        "Ch 35.1": False,
+        "Ch 35.2": False,
+        "Ch 35.3": False,
+        "Ch 35.4": False,
+        "Ch 35.5": False,
+        "Ch 35.7": False,
+        "Ch 35.8": False,
+        "Ch 35.9": False,
+        "Ch 35.10": False,
+        "Ch 35.13": False,
+        "Ch 35.14": False,
+        "Ch 35.15": False,
+        "Ch 36.1:": False,
+        "Ch 36.2:": False,
+        "Ch 36.3:": False,
+        "Ch 36.4:": False,
+        "Ch 36.5:": False,
+        "Ch 36.6:": False
+        
     },
     "CHE 309": {
         "Lab 1": False,
