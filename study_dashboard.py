@@ -53,20 +53,20 @@ DEFAULT_DATA = {
         "MT Part": False,
         "FM Part": False,
         "Final Lab Prep": False
-    }
+    },
     "CHE 360": {
         "unit 6": False,
         "unit 8": False,
         "unit 9": False,
         "Project": False
-    }
+    },
     "GS 495": {
         "week 8 & 9": False,
         "week 10": False,
         "week 11": False,
         "week 12 ": False,
         "Project ": False
-    }
+    },
     "CHEM 312": {
         "The Laboratory Safety, Lab Report/Rejection Rule, and Density ": False,
         "Absorption Spectrum of Conjugated Dye": False,
