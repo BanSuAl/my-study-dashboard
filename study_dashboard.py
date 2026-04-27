@@ -76,30 +76,28 @@ for course, lectures in data.items():
 
     # Pie Chart Logic
     if total > 0:
-        # Create a dataframe for Plotly
         df = pd.DataFrame({
             "Status": ["Completed", "Remaining"],
             "Count": [done, remaining]
         })
         
-        # Build the Pie Chart
         fig = px.pie(
             df, 
             values='Count', 
             names='Status', 
             color='Status',
             color_discrete_map={'Completed': '#2ecc71', 'Remaining': '#e74c3c'},
-            hole=0.4 # Makes it look like a donut, cleaner for mobile!
+            hole=0.4
         )
         
-        # Update layout to look better on the dashboard
         fig.update_layout(
             margin=dict(l=20, r=20, t=20, b=20),
             height=300,
             showlegend=True
         )
         
-        st.plotly_chart(fig, use_container_width=True)
+        # ADDED THE KEY HERE TO FIX THE ERROR
+        st.plotly_chart(fig, use_container_width=True, key=f"chart_{course}")
 
     # Checklist
     with st.expander(f"Update {course} Chapters"):
