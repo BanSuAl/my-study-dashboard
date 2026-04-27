@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import os
 import pandas as pd
+import plotly.express as px
 
 # Set up the page layout
 st.set_page_config(page_title="Study Dashboard", layout="centered")
@@ -9,7 +10,7 @@ st.set_page_config(page_title="Study Dashboard", layout="centered")
 # File to store your progress so it doesn't reset
 DATA_FILE = "study_data.json"
 
-# The updated database of courses and lectures
+# Your Course Database
 DEFAULT_DATA = {
     "CHE 306": {
         "Ch5 L1": False, "Ch7 L2": False, "Ch7 L3": False, "Ch7 L4": False,
@@ -56,44 +57,54 @@ def save_data(data):
         json.dump(data, f)
 
 st.title("📚 Study Progress Dashboard")
-st.write("Track your course completion with automated charts.")
 st.divider()
 
-# Load the current state of your courses
+# Load the current state
 data = load_data()
 
-# Loop through each course to build the dashboard UI
+# Loop through courses
 for course, lectures in data.items():
-    st.subheader(f"📖 {course}")
+    st.header(f"📖 {course}")
     
-    # 1. Calculate the counts
-    total_lectures = len(lectures)
-    completed_lectures = sum(1 for status in lectures.values() if status)
-    remaining_lectures = total_lectures - completed_lectures
+    total = len(lectures)
+    done = sum(1 for status in lectures.values() if status)
+    remaining = total - done
     
-    # 2. Render the visual progress bar
-    if total_lectures > 0:
-        progress_decimal = completed_lectures / total_lectures
-    else:
-        progress_decimal = 0.0
-    st.progress(progress_decimal, text=f"{completed_lectures}/{total_lectures} Lectures Finished")
+    # Progress Bar
+    percent = (done / total) if total > 0 else 0
+    st.progress(percent, text=f"{int(percent*100)}% Complete")
 
-    # 3. Add the Visual Chart
-    if total_lectures > 0:
-        # Prepare data for the chart
-        chart_df = pd.DataFrame({
-            "Status": ["Done", "Remaining"],
-            "Count": [completed_lectures, remaining_lectures]
+    # Pie Chart Logic
+    if total > 0:
+        # Create a dataframe for Plotly
+        df = pd.DataFrame({
+            "Status": ["Completed", "Remaining"],
+            "Count": [done, remaining]
         })
-        # Display as a horizontal bar chart for better mobile viewing
-        st.bar_chart(chart_df, x="Status", y="Count", color="#4CAF50" if completed_lectures > remaining_lectures else "#FF4B4B")
+        
+        # Build the Pie Chart
+        fig = px.pie(
+            df, 
+            values='Count', 
+            names='Status', 
+            color='Status',
+            color_discrete_map={'Completed': '#2ecc71', 'Remaining': '#e74c3c'},
+            hole=0.4 # Makes it look like a donut, cleaner for mobile!
+        )
+        
+        # Update layout to look better on the dashboard
+        fig.update_layout(
+            margin=dict(l=20, r=20, t=20, b=20),
+            height=300,
+            showlegend=True
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
 
-    # 4. Create the Checklist (Inside an expander to save space)
-    with st.expander(f"View {course} Chapters"):
+    # Checklist
+    with st.expander(f"Update {course} Chapters"):
         for lecture, is_done in lectures.items():
             checked = st.checkbox(lecture, value=is_done, key=f"{course}_{lecture}")
-            
-            # If the checkbox state changes, save and refresh
             if checked != is_done:
                 data[course][lecture] = checked
                 save_data(data)
@@ -101,5 +112,4 @@ for course, lectures in data.items():
             
     st.divider()
 
-# Footer
-st.caption("Custom built for Bandar Alharbi - 2026")
+st.caption("Updated April 2026 | KFUPM Student Dashboard")
