@@ -1,18 +1,11 @@
 import streamlit as st
 import json, os, calendar
-import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
-from pathlib import Path
+from supabase import create_client
 
 # ── page config ──────────────────────────────
 st.set_page_config(page_title="Study Dashboard · KFUPM", layout="wide", page_icon="◈")
-
-# ── file paths ───────────────────────────────
-BASE        = Path(__file__).parent
-DATA_FILE   = BASE / "study_data.json"
-EVENTS_FILE = BASE / "events_data.json"
-META_FILE   = BASE / "meta_data.json"       # streak, priorities, weekly plan, pomodoro log
 
 DEFAULT_DATA = {
     "CHE 306": {
@@ -44,39 +37,49 @@ DEFAULT_DATA = {
 COURSE_COLORS = ["#4361ee","#e63946","#7209b7","#2d6a4f","#e76f51","#0077b6"]
 DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 
-# ── persistence ──────────────────────────────
-def load_json(path, default):
-    if path.exists():
-        with open(path) as f: return json.load(f)
-    return default
+# ── Supabase persistence ──────────────────────
+@st.cache_resource
+def get_supabase():
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
-def save_json(path, obj):
-    with open(path, "w") as f: json.dump(obj, f, indent=2)
+def db_get(key, default):
+    try:
+        res = get_supabase().table("study_data").select("value").eq("key", key).execute()
+        if res.data and res.data[0]["value"] is not None:
+            return res.data[0]["value"]
+        return default
+    except:
+        return default
+
+def db_set(key, value):
+    try:
+        get_supabase().table("study_data").upsert({"key": key, "value": value}).execute()
+    except:
+        pass
 
 def load_data():
-    saved = load_json(DATA_FILE, {})
-    # Start from DEFAULT_DATA structure, then overlay saved progress
+    saved = db_get("courses", {})
     merged = {}
     for course, topics in DEFAULT_DATA.items():
         merged[course] = {}
         for topic, default_val in topics.items():
             merged[course][topic] = saved.get(course, {}).get(topic, default_val)
-    # Also keep any courses the user added manually (not in DEFAULT_DATA)
     for course, topics in saved.items():
         if course not in merged:
             merged[course] = topics
     return merged
-def load_events(): return load_json(EVENTS_FILE, [])
-def load_meta():   return load_json(META_FILE,   {
+
+def load_events(): return db_get("events", [])
+def load_meta():   return db_get("meta", {
     "streak_last": None, "streak_count": 0,
-    "priorities": {},    # {"COURSE::topic": "high"/"medium"/"low"}
-    "weekly_plan": {},   # {"Monday": ["CHE 306", ...]}
-    "pomodoro_log": {}   # {"YYYY-MM-DD": {"CHE 306": minutes}}
+    "priorities": {},
+    "weekly_plan": {},
+    "pomodoro_log": {}
 })
 
-def save_data(d):   save_json(DATA_FILE,   d)
-def save_events(e): save_json(EVENTS_FILE, e)
-def save_meta(m):   save_json(META_FILE,   m)
+def save_data(d):   db_set("courses", d)
+def save_events(e): db_set("events",  e)
+def save_meta(m):   db_set("meta",    m)
 
 # ── streak helper ─────────────────────────────
 def update_streak(meta):
@@ -712,10 +715,65 @@ elif page == "📅  Calendar":
                 else: st.session_state.cal_month-=1
                 st.rerun()
         with n2:
-            st.markdown(f"""<div style="text-align:center;font-family:'Playfair Display',serif;
-                font-size:1.1rem;font-weight:700;color:{TEXT};padding-top:5px;">
-                {calendar.month_name[st.session_state.cal_month]} {st.session_state.cal_year}
-                </div>""", unsafe_allow_html=True)
+            import streamlit.components.v1 as components
+        msg_text = "Focus time — stay off your phone!" if "Work" in pomo_type else "Take a proper break ☕"
+        components.html(f"""<!DOCTYPE html><html><head>
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@800&family=DM+Sans:wght@500&family=DM+Mono:wght@400&display=swap');
+        *{{margin:0;padding:0;box-sizing:border-box;}}
+        body{{background:{'#161b27' if dark else '#ffffff'};display:flex;flex-direction:column;align-items:center;padding:1.8rem 1rem 1.4rem;font-family:'DM Sans',sans-serif;}}
+        #pomo-ring{{position:relative;width:200px;height:200px;margin-bottom:.8rem;}}
+        #pomo-ring svg{{transform:rotate(-90deg);}}
+        #pomo-track{{stroke:{'#2a3248' if dark else '#f0ede8'};}}
+        #pomo-fill{{stroke:{ACCENT};transition:stroke-dashoffset 1s linear;stroke-dasharray:565.5;stroke-dashoffset:0;}}
+        #pomo-center{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;}}
+        #pomo-time{{font-family:'Playfair Display',serif;font-size:2.4rem;font-weight:800;color:{ACCENT};line-height:1;}}
+        #pomo-label{{font-family:'DM Mono',monospace;font-size:.62rem;color:{'#5a6080' if dark else '#9a948c'};letter-spacing:.1em;text-transform:uppercase;margin-top:3px;}}
+        #pomo-msg{{font-size:.82rem;color:{'#9aa0b8' if dark else '#4a4640'};margin-bottom:1.2rem;text-align:center;max-width:240px;}}
+        .btn-row{{display:flex;gap:.6rem;justify-content:center;}}
+        .btn-primary{{background:{ACCENT};color:white;border:none;border-radius:8px;padding:.6rem 1.8rem;font-family:'DM Sans',sans-serif;font-size:.88rem;font-weight:600;cursor:pointer;}}
+        .btn-primary:disabled{{opacity:.5;cursor:default;}}
+        .btn-secondary{{background:{'#1c2333' if dark else '#ffffff'};color:{'#9aa0b8' if dark else '#4a4640'};border:1.5px solid {'#2a3248' if dark else '#e2ddd6'};border-radius:8px;padding:.6rem 1.4rem;font-family:'DM Sans',sans-serif;font-size:.88rem;font-weight:500;cursor:pointer;}}
+        #pomo-done{{font-size:.82rem;color:#52b788;margin-top:.8rem;font-weight:600;min-height:1.2rem;text-align:center;}}
+        </style></head><body>
+        <div id="pomo-ring">
+          <svg width="200" height="200" viewBox="0 0 200 200">
+            <circle id="pomo-track" cx="100" cy="100" r="90" fill="none" stroke-width="10"/>
+            <circle id="pomo-fill" cx="100" cy="100" r="90" fill="none" stroke-width="10" stroke-linecap="round"/>
+          </svg>
+          <div id="pomo-center">
+            <div id="pomo-time">{minutes:02d}:00</div>
+            <div id="pomo-label">{'FOCUS' if 'Work' in pomo_type else 'BREAK'}</div>
+          </div>
+        </div>
+        <div id="pomo-msg">{msg_text}</div>
+        <div class="btn-row">
+          <button class="btn-primary" id="btn-start" onclick="startPomo()">▶  Start</button>
+          <button class="btn-secondary" onclick="resetPomo()">↺  Reset</button>
+        </div>
+        <div id="pomo-done"></div>
+        <script>
+          const TOTAL={seconds_total},CIRC=2*Math.PI*90;
+          let secsLeft=TOTAL,interval=null,running=false;
+          const fillEl=document.getElementById('pomo-fill'),timeEl=document.getElementById('pomo-time'),
+                msgEl=document.getElementById('pomo-msg'),doneEl=document.getElementById('pomo-done'),
+                startBtn=document.getElementById('btn-start');
+          fillEl.style.strokeDasharray=CIRC;fillEl.style.strokeDashoffset=0;
+          function fmt(s){{return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');}}
+          function tick(){{
+            if(secsLeft<=0){{clearInterval(interval);interval=null;running=false;
+              timeEl.innerText='00:00';timeEl.style.color='#52b788';fillEl.style.stroke='#52b788';
+              msgEl.innerText='';doneEl.innerText='✅ Session complete!';startBtn.disabled=true;startBtn.innerText='Done';
+              try{{new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play();}}catch(e){{}}return;}}
+            secsLeft--;timeEl.innerText=fmt(secsLeft);
+            fillEl.style.strokeDashoffset=CIRC*(1-secsLeft/TOTAL);
+          }}
+          function startPomo(){{if(running)return;running=true;startBtn.disabled=true;startBtn.innerText='Running…';doneEl.innerText='';interval=setInterval(tick,1000);}}
+          function resetPomo(){{clearInterval(interval);interval=null;running=false;secsLeft=TOTAL;
+            timeEl.innerText=fmt(secsLeft);timeEl.style.color='{ACCENT}';fillEl.style.stroke='{ACCENT}';
+            fillEl.style.strokeDashoffset=0;msgEl.innerText='{msg_text}';doneEl.innerText='';
+            startBtn.disabled=false;startBtn.innerText='▶  Start';}}
+        </script></body></html>""", height=420)
         with n3:
             if st.button("→", key="next_m"):
                 if st.session_state.cal_month==12:
