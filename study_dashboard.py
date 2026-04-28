@@ -1,11 +1,18 @@
 import streamlit as st
 import json, os, calendar
+import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
-from supabase import create_client
+from pathlib import Path
 
 # ── page config ──────────────────────────────
 st.set_page_config(page_title="Study Dashboard · KFUPM", layout="wide", page_icon="◈")
+
+# ── file paths ───────────────────────────────
+BASE        = Path(__file__).parent
+DATA_FILE   = BASE / "study_data.json"
+EVENTS_FILE = BASE / "events_data.json"
+META_FILE   = BASE / "meta_data.json"       # streak, priorities, weekly plan, pomodoro log
 
 DEFAULT_DATA = {
     "CHE 306": {
@@ -37,49 +44,39 @@ DEFAULT_DATA = {
 COURSE_COLORS = ["#4361ee","#e63946","#7209b7","#2d6a4f","#e76f51","#0077b6"]
 DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 
-# ── Supabase persistence ──────────────────────
-@st.cache_resource
-def get_supabase():
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+# ── persistence ──────────────────────────────
+def load_json(path, default):
+    if path.exists():
+        with open(path) as f: return json.load(f)
+    return default
 
-def db_get(key, default):
-    try:
-        res = get_supabase().table("study_data").select("value").eq("key", key).execute()
-        if res.data and res.data[0]["value"] is not None:
-            return res.data[0]["value"]
-        return default
-    except:
-        return default
-
-def db_set(key, value):
-    try:
-        get_supabase().table("study_data").upsert({"key": key, "value": value}).execute()
-    except:
-        pass
+def save_json(path, obj):
+    with open(path, "w") as f: json.dump(obj, f, indent=2)
 
 def load_data():
-    saved = db_get("courses", {})
+    saved = load_json(DATA_FILE, {})
+    # Start from DEFAULT_DATA structure, then overlay saved progress
     merged = {}
     for course, topics in DEFAULT_DATA.items():
         merged[course] = {}
         for topic, default_val in topics.items():
             merged[course][topic] = saved.get(course, {}).get(topic, default_val)
+    # Also keep any courses the user added manually (not in DEFAULT_DATA)
     for course, topics in saved.items():
         if course not in merged:
             merged[course] = topics
     return merged
-
-def load_events(): return db_get("events", [])
-def load_meta():   return db_get("meta", {
+def load_events(): return load_json(EVENTS_FILE, [])
+def load_meta():   return load_json(META_FILE,   {
     "streak_last": None, "streak_count": 0,
-    "priorities": {},
-    "weekly_plan": {},
-    "pomodoro_log": {}
+    "priorities": {},    # {"COURSE::topic": "high"/"medium"/"low"}
+    "weekly_plan": {},   # {"Monday": ["CHE 306", ...]}
+    "pomodoro_log": {}   # {"YYYY-MM-DD": {"CHE 306": minutes}}
 })
 
-def save_data(d):   db_set("courses", d)
-def save_events(e): db_set("events",  e)
-def save_meta(m):   db_set("meta",    m)
+def save_data(d):   save_json(DATA_FILE,   d)
+def save_events(e): save_json(EVENTS_FILE, e)
+def save_meta(m):   save_json(META_FILE,   m)
 
 # ── streak helper ─────────────────────────────
 def update_streak(meta):
@@ -202,6 +199,7 @@ def heading(text, sub=""):
         {"" if not sub else f'<div style="{label_style()}margin-top:5px;">{sub}</div>'}
     </div>""", unsafe_allow_html=True)
 
+# ── next exam helper ──────────────────────────
 def next_exam():
     exams = [e for e in events if e["type"]=="Exam"
              and datetime.strptime(e["date"],"%Y-%m-%d").date() >= today]
@@ -212,6 +210,7 @@ def next_exam():
 #  SIDEBAR
 # ════════════════════════════════════════════════
 with st.sidebar:
+    # Logo + dark mode toggle
     c_logo, c_toggle = st.columns([3,1])
     with c_logo:
         st.markdown(f"""
@@ -238,6 +237,7 @@ with st.sidebar:
 
     st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
 
+    # ── Streak ──
     total_all = sum(len(v) for v in data.values())
     done_all  = sum(sum(1 for s in v.values() if s) for v in data.values())
 
@@ -261,6 +261,7 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Next exam countdown ──
     ne = next_exam()
     if ne:
         ne_d  = datetime.strptime(ne["date"],"%Y-%m-%d").date()
@@ -279,6 +280,7 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True)
 
+    # ── Upcoming events ──
     st.markdown(f'<div style="{label_style()}margin-bottom:.6rem;">Upcoming</div>',
                 unsafe_allow_html=True)
     upcoming = sorted([e for e in events
@@ -313,6 +315,7 @@ with st.sidebar:
 # ════════════════════════════════════════════════
 if page == "📊  Progress":
 
+    # Exam countdown banner
     ne = next_exam()
     if ne:
         ne_d = datetime.strptime(ne["date"],"%Y-%m-%d").date()
@@ -335,6 +338,7 @@ if page == "📊  Progress":
 
     heading("Study Progress", f"Spring 2026 — {len(data)} courses tracked")
 
+    # Stats row
     pct_all = int(done_all/total_all*100) if total_all else 0
     s1,s2,s3,s4 = st.columns(4)
     for col, val, lbl in [(s1,f"{pct_all}%","Overall"),
@@ -350,6 +354,7 @@ if page == "📊  Progress":
                 <div style="{label_style()}margin-top:4px;">{lbl}</div>
             </div>""", unsafe_allow_html=True)
 
+    # Bar chart
     names,pcts,clrs = [],[],[]
     for c in course_list:
         t=len(data[c]); d=sum(1 for s in data[c].values() if s)
@@ -365,6 +370,7 @@ if page == "📊  Progress":
     st.plotly_chart(fig, use_container_width=True, key="bar")
     st.markdown("<hr>", unsafe_allow_html=True)
 
+    # 2-column course cards
     course_items = list(data.items())
     for i in range(0, len(course_items), 2):
         col_a, col_b = st.columns(2, gap="medium")
@@ -458,87 +464,163 @@ elif page == "⏱️  Pomodoro":
         msg_text      = "Focus time — stay off your phone!" if "Work" in pomo_type else "Take a proper break ☕"
 
         components.html(f"""
-        <!DOCTYPE html><html><head>
+        <!DOCTYPE html>
+        <html>
+        <head>
         <style>
           @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@800&family=DM+Sans:wght@500&family=DM+Mono:wght@400&display=swap');
-          *{{ margin:0; padding:0; box-sizing:border-box; }}
-          body{{ background:{'#161b27' if dark else '#ffffff'}; display:flex; flex-direction:column; align-items:center; padding:1.8rem 1rem 1.4rem; font-family:'DM Sans',sans-serif; }}
-          #pomo-ring{{ position:relative; width:200px; height:200px; margin-bottom:.8rem; }}
-          #pomo-ring svg{{ transform:rotate(-90deg); }}
-          #pomo-track{{ stroke:{'#2a3248' if dark else '#f0ede8'}; }}
-          #pomo-fill{{ stroke:{ACCENT}; transition:stroke-dashoffset 1s linear; stroke-dasharray:565.5; stroke-dashoffset:0; }}
-          #pomo-center{{ position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; }}
-          #pomo-time{{ font-family:'Playfair Display',serif; font-size:2.4rem; font-weight:800; color:{ACCENT}; line-height:1; transition:color .4s; }}
-          #pomo-label{{ font-family:'DM Mono',monospace; font-size:.62rem; color:{'#5a6080' if dark else '#9a948c'}; letter-spacing:.1em; text-transform:uppercase; margin-top:3px; }}
-          #pomo-msg{{ font-size:.82rem; color:{'#9aa0b8' if dark else '#4a4640'}; margin-bottom:1.2rem; text-align:center; max-width:240px; }}
-          .btn-row{{ display:flex; gap:.6rem; justify-content:center; flex-wrap:wrap; }}
-          .btn-primary{{ background:{ACCENT}; color:white; border:none; border-radius:8px; padding:.6rem 1.8rem; font-family:'DM Sans',sans-serif; font-size:.88rem; font-weight:600; cursor:pointer; transition:opacity .2s; }}
-          .btn-primary:disabled{{ opacity:.5; cursor:default; }}
-          .btn-secondary{{ background:{'#1c2333' if dark else '#ffffff'}; color:{'#9aa0b8' if dark else '#4a4640'}; border:1.5px solid {'#2a3248' if dark else '#e2ddd6'}; border-radius:8px; padding:.6rem 1.4rem; font-family:'DM Sans',sans-serif; font-size:.88rem; font-weight:500; cursor:pointer; }}
-          #pomo-done{{ font-size:.82rem; color:#52b788; margin-top:.8rem; font-weight:600; min-height:1.2rem; text-align:center; }}
+          * {{ margin:0; padding:0; box-sizing:border-box; }}
+          body {{
+            background: {'#161b27' if dark else '#ffffff'};
+            display: flex; flex-direction: column; align-items: center;
+            padding: 1.8rem 1rem 1.4rem; font-family: 'DM Sans', sans-serif;
+          }}
+          #pomo-display {{
+            font-family: 'Playfair Display', serif;
+            font-size: 5rem; font-weight: 800;
+            color: {ACCENT}; letter-spacing: -.02em;
+            margin: .5rem 0 .4rem; line-height: 1;
+            transition: color .4s;
+          }}
+          #pomo-ring {{
+            position: relative; width: 200px; height: 200px; margin-bottom: .8rem;
+          }}
+          #pomo-ring svg {{ transform: rotate(-90deg); }}
+          #pomo-track {{ stroke: {'#2a3248' if dark else '#f0ede8'}; }}
+          #pomo-fill  {{ stroke: {ACCENT}; transition: stroke-dashoffset 1s linear; stroke-dasharray: 565.5; stroke-dashoffset: 0; }}
+          #pomo-center {{
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+            text-align: center;
+          }}
+          #pomo-time {{
+            font-family: 'Playfair Display', serif; font-size: 2.4rem;
+            font-weight: 800; color: {ACCENT}; line-height: 1; transition: color .4s;
+          }}
+          #pomo-label {{
+            font-family: 'DM Mono', monospace; font-size: .62rem;
+            color: {'#5a6080' if dark else '#9a948c'}; letter-spacing: .1em;
+            text-transform: uppercase; margin-top: 3px;
+          }}
+          #pomo-msg {{
+            font-size: .82rem; color: {'#9aa0b8' if dark else '#4a4640'};
+            margin-bottom: 1.2rem; text-align: center; max-width: 240px;
+          }}
+          .btn-row {{ display: flex; gap: .6rem; justify-content: center; flex-wrap: wrap; }}
+          .btn-primary {{
+            background: {ACCENT}; color: white; border: none; border-radius: 8px;
+            padding: .6rem 1.8rem; font-family: 'DM Sans', sans-serif;
+            font-size: .88rem; font-weight: 600; cursor: pointer;
+            transition: opacity .2s;
+          }}
+          .btn-primary:disabled {{ opacity: .5; cursor: default; }}
+          .btn-secondary {{
+            background: {'#1c2333' if dark else '#ffffff'};
+            color: {'#9aa0b8' if dark else '#4a4640'};
+            border: 1.5px solid {'#2a3248' if dark else '#e2ddd6'};
+            border-radius: 8px; padding: .6rem 1.4rem;
+            font-family: 'DM Sans', sans-serif; font-size: .88rem;
+            font-weight: 500; cursor: pointer; transition: all .15s;
+          }}
+          #pomo-done {{
+            font-size: .82rem; color: #52b788; margin-top: .8rem;
+            font-weight: 600; min-height: 1.2rem; text-align: center;
+          }}
         </style>
-        </head><body>
+        </head>
+        <body>
+
         <div id="pomo-ring">
           <svg width="200" height="200" viewBox="0 0 200 200">
             <circle id="pomo-track" cx="100" cy="100" r="90" fill="none" stroke-width="10"/>
-            <circle id="pomo-fill"  cx="100" cy="100" r="90" fill="none" stroke-width="10" stroke-linecap="round"/>
+            <circle id="pomo-fill"  cx="100" cy="100" r="90" fill="none" stroke-width="10"
+                    stroke-linecap="round"/>
           </svg>
           <div id="pomo-center">
             <div id="pomo-time">{minutes:02d}:00</div>
             <div id="pomo-label">{'FOCUS' if 'Work' in pomo_type else 'BREAK'}</div>
           </div>
         </div>
+
         <div id="pomo-msg">{msg_text}</div>
+
         <div class="btn-row">
-          <button class="btn-primary" id="btn-start" onclick="startPomo()">▶  Start</button>
+          <button class="btn-primary"  id="btn-start" onclick="startPomo()">▶  Start</button>
           <button class="btn-secondary" onclick="resetPomo()">↺  Reset</button>
         </div>
         <div id="pomo-done"></div>
+
         <script>
           const TOTAL = {seconds_total};
-          const CIRC  = 2 * Math.PI * 90;
-          let secsLeft = TOTAL, interval = null, running = false;
+          const CIRC  = 2 * Math.PI * 90;   // 565.49
+          let secsLeft   = TOTAL;
+          let interval   = null;
+          let running    = false;
+
           const fillEl   = document.getElementById('pomo-fill');
           const timeEl   = document.getElementById('pomo-time');
           const msgEl    = document.getElementById('pomo-msg');
           const doneEl   = document.getElementById('pomo-done');
           const startBtn = document.getElementById('btn-start');
+
           fillEl.style.strokeDasharray  = CIRC;
           fillEl.style.strokeDashoffset = 0;
+
           function fmt(s) {{
             return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
           }}
+
+          function updateRing() {{
+            const offset = CIRC * (1 - secsLeft / TOTAL);
+            fillEl.style.strokeDashoffset = offset;
+          }}
+
           function tick() {{
             if (secsLeft <= 0) {{
               clearInterval(interval); interval = null; running = false;
-              timeEl.innerText = '00:00'; timeEl.style.color = '#52b788';
+              timeEl.innerText  = '00:00';
+              timeEl.style.color = '#52b788';
               fillEl.style.stroke = '#52b788';
-              msgEl.innerText = ''; doneEl.innerText = '✅ Session complete!';
-              startBtn.disabled = true; startBtn.innerText = 'Done';
+              msgEl.innerText   = '';
+              doneEl.innerText  = '✅ Session complete!';
+              startBtn.disabled = true;
+              startBtn.innerText = 'Done';
               try {{ new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play(); }} catch(e) {{}}
               return;
             }}
             secsLeft--;
             timeEl.innerText = fmt(secsLeft);
-            fillEl.style.strokeDashoffset = CIRC * (1 - secsLeft / TOTAL);
+            updateRing();
           }}
+
           function startPomo() {{
             if (running) return;
-            running = true; startBtn.disabled = true; startBtn.innerText = 'Running…'; doneEl.innerText = '';
+            running = true;
+            startBtn.disabled  = true;
+            startBtn.innerText = 'Running…';
+            doneEl.innerText   = '';
             interval = setInterval(tick, 1000);
           }}
+
           function resetPomo() {{
-            clearInterval(interval); interval = null; running = false; secsLeft = TOTAL;
-            timeEl.innerText = fmt(secsLeft); timeEl.style.color = '{ACCENT}';
-            fillEl.style.stroke = '{ACCENT}'; fillEl.style.strokeDashoffset = 0;
-            msgEl.innerText = '{msg_text}'; doneEl.innerText = '';
-            startBtn.disabled = false; startBtn.innerText = '▶  Start';
+            clearInterval(interval); interval = null; running = false;
+            secsLeft = TOTAL;
+            timeEl.innerText  = fmt(secsLeft);
+            timeEl.style.color = '{ACCENT}';
+            fillEl.style.stroke = '{ACCENT}';
+            fillEl.style.strokeDashoffset = 0;
+            msgEl.innerText   = '{msg_text}';
+            doneEl.innerText  = '';
+            startBtn.disabled  = false;
+            startBtn.innerText = '▶  Start';
           }}
         </script>
-        </body></html>
-        """, height=420)
+        </body>
+        </html>
+        """, height=480)
 
         st.markdown("<div style='height:.6rem'></div>", unsafe_allow_html=True)
+
+        # Log a completed session manually
         st.markdown(f'<div style="{label_style()}margin-bottom:.5rem;">Log Completed Session</div>',
                     unsafe_allow_html=True)
         log_course = st.selectbox("Course", list(data.keys()), key="log_course")
@@ -558,14 +640,17 @@ elif page == "⏱️  Pomodoro":
     with col_log:
         st.markdown(f'<div style="{label_style()}margin-bottom:.8rem;">Study Log — Last 7 Days</div>',
                     unsafe_allow_html=True)
+
         plog = meta.get("pomodoro_log", {})
         last7     = [(today - timedelta(days=i)) for i in range(6,-1,-1)]
         last7_str = [str(d) for d in last7]
+
         chart_data = {c: [] for c in course_list}
         for ds in last7_str:
             day_log = plog.get(ds, {})
             for c in course_list:
                 chart_data[c].append(day_log.get(c, 0))
+
         day_labels = [d.strftime("%a %d") for d in last7]
         fig2 = go.Figure()
         for c in course_list:
@@ -584,6 +669,7 @@ elif page == "⏱️  Pomodoro":
             legend=dict(font=dict(family="DM Sans",size=11,color=TEXTM), bgcolor="rgba(0,0,0,0)")
         )
         st.plotly_chart(fig2, use_container_width=True, key="pomo_chart")
+
         st.markdown(f'<div style="{label_style()}margin-bottom:.6rem;margin-top:.4rem;">All-Time Totals</div>',
                     unsafe_allow_html=True)
         totals = {}
@@ -609,7 +695,6 @@ elif page == "⏱️  Pomodoro":
         else:
             st.markdown(f"<div style='font-size:.84rem;color:{TEXTD};'>No sessions logged yet.</div>",
                         unsafe_allow_html=True)
-
 
 # ════════════════════════════════════════════════
 #  PAGE 3 — CALENDAR
@@ -749,6 +834,7 @@ elif page == "📆  Weekly Plan":
 
     plan = meta.get("weekly_plan", {d:[] for d in DAYS})
 
+    # PDF export button (generates printable HTML → triggers browser print)
     st.markdown(f"""
     <div style="display:flex;justify-content:flex-end;margin-bottom:1rem;">
         <button onclick="window.print()"
@@ -767,12 +853,14 @@ elif page == "📆  Weekly Plan":
     </style>
     """, unsafe_allow_html=True)
 
+    # Week grid — 7 columns
     day_cols = st.columns(7, gap="small")
     today_name = today.strftime("%A")
 
     for i, (day, col) in enumerate(zip(DAYS, day_cols)):
         with col:
             is_today = (day == today_name)
+            # Day header
             st.markdown(f"""
             <div style="background:{'#1a3a2a' if (dark and is_today) else (ACCENT if is_today else WHITE)};
                         border:1.5px solid {ACCENT if is_today else BORDER};
@@ -788,6 +876,7 @@ elif page == "📆  Weekly Plan":
             </div>
             """, unsafe_allow_html=True)
 
+            # Assigned courses as chips
             assigned = plan.get(day, [])
             for c in assigned:
                 clr = color_map.get(c, "#888")
@@ -803,6 +892,7 @@ elif page == "📆  Weekly Plan":
                     <div style="font-size:.65rem;color:{TEXTD};">{p}% done</div>
                 </div>""", unsafe_allow_html=True)
 
+            # Events on this day
             day_date = today + timedelta(days=(i - today.weekday()) % 7)
             day_evs  = [e for e in events if e["date"] == str(day_date)]
             for ev in day_evs:
