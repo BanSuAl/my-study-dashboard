@@ -53,7 +53,19 @@ def load_json(path, default):
 def save_json(path, obj):
     with open(path, "w") as f: json.dump(obj, f, indent=2)
 
-def load_data():   return load_json(DATA_FILE,   DEFAULT_DATA)
+def load_data():
+    saved = load_json(DATA_FILE, {})
+    # Start from DEFAULT_DATA structure, then overlay saved progress
+    merged = {}
+    for course, topics in DEFAULT_DATA.items():
+        merged[course] = {}
+        for topic, default_val in topics.items():
+            merged[course][topic] = saved.get(course, {}).get(topic, default_val)
+    # Also keep any courses the user added manually (not in DEFAULT_DATA)
+    for course, topics in saved.items():
+        if course not in merged:
+            merged[course] = topics
+    return merged
 def load_events(): return load_json(EVENTS_FILE, [])
 def load_meta():   return load_json(META_FILE,   {
     "streak_last": None, "streak_count": 0,
