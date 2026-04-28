@@ -574,7 +574,7 @@ elif page == "⏱️  Pomodoro":
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             font=dict(family="DM Sans", color=TEXTM),
             yaxis=dict(title="Minutes", showgrid=True,
-                       gridcolor="#2a324830" if dark else "#e2ddd680",
+                       gridcolor="rgba(42, 50, 72, 0.19)" if dark else "rgba(226, 221, 214, 0.5)",
                        zeroline=False, tickfont=dict(family="DM Mono",size=10,color=TEXTD)),
             xaxis=dict(showgrid=False, tickfont=dict(family="DM Mono",size=10,color=TEXTD)),
             margin=dict(t=10,b=5,l=0,r=0), height=280,
