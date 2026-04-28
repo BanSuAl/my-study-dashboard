@@ -456,27 +456,22 @@ elif page == "⏱️  Pomodoro":
         minutes = 25 if "Work" in pomo_type else 5
         seconds_total = minutes * 60
 
+        # Updated Timer Display and JavaScript
         st.markdown(f"""
-        <div style="font-family:'Playfair Display',serif;font-size:4.5rem;font-weight:800;
+        <div id="pomo-display" style="font-family:'Playfair Display',serif;font-size:4.5rem;font-weight:800;
                     color:{ACCENT};letter-spacing:-.02em;margin:1.5rem 0 .5rem;">
             {minutes:02d}:00
         </div>
-        <div style="font-size:.82rem;color:{TEXTD};margin-bottom:1.5rem;">
+        <div id="pomo-msg" style="font-size:.82rem;color:{TEXTD};margin-bottom:1.5rem;">
             {"Focus time — stay off your phone!" if "Work" in pomo_type else "Take a proper break ☕"}
         </div>
-        """, unsafe_allow_html=True)
-
-        # JS Pomodoro timer (runs client-side)
-        st.markdown(f"""
-        <div id="pomo-display" style="font-family:'Playfair Display',serif;font-size:5rem;
-             font-weight:800;color:{ACCENT};letter-spacing:-.02em;display:none;
-             margin-bottom:1rem;"></div>
-        <div id="pomo-msg" style="font-size:.84rem;color:{TEXTD};margin-bottom:.5rem;"></div>
 
         <script>
-        let pomoInterval = null;
-        let pomoSeconds  = {seconds_total};
-        let pomoRunning  = false;
+        // Ensure intervals are cleared if script reruns
+        if (window.pomoInterval) clearInterval(window.pomoInterval);
+        
+        window.pomoSeconds = {seconds_total};
+        window.pomoInterval = null;
 
         function formatTime(s) {{
             const m = Math.floor(s/60);
@@ -484,17 +479,18 @@ elif page == "⏱️  Pomodoro":
             return String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0');
         }}
 
-        function startPomo() {{
-            if (pomoRunning) return;
-            pomoRunning = true;
-            document.getElementById('pomo-display').style.display = 'block';
-            document.getElementById('pomo-btn-start').style.display = 'none';
-            pomoInterval = setInterval(() => {{
-                pomoSeconds--;
-                document.getElementById('pomo-display').innerText = formatTime(pomoSeconds);
-                if (pomoSeconds <= 0) {{
-                    clearInterval(pomoInterval);
-                    pomoRunning = false;
+        window.startPomo = function() {{
+            if (window.pomoInterval) return;
+            const btn = document.getElementById('pomo-btn-start');
+            btn.style.opacity = '0.5';
+            btn.innerText = 'Running...';
+            
+            window.pomoInterval = setInterval(() => {{
+                window.pomoSeconds--;
+                document.getElementById('pomo-display').innerText = formatTime(window.pomoSeconds);
+                if (window.pomoSeconds <= 0) {{
+                    clearInterval(window.pomoInterval);
+                    window.pomoInterval = null;
                     document.getElementById('pomo-msg').innerText = '✅ Session complete!';
                     document.getElementById('pomo-display').style.color = '#52b788';
                     try {{ new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play(); }} catch(e) {{}}
@@ -502,13 +498,15 @@ elif page == "⏱️  Pomodoro":
             }}, 1000);
         }}
 
-        function resetPomo() {{
-            clearInterval(pomoInterval);
-            pomoRunning = false;
-            pomoSeconds = {seconds_total};
-            document.getElementById('pomo-display').innerText = formatTime(pomoSeconds);
-            document.getElementById('pomo-msg').innerText = '';
-            document.getElementById('pomo-btn-start').style.display = 'inline-block';
+        window.resetPomo = function() {{
+            clearInterval(window.pomoInterval);
+            window.pomoInterval = null;
+            window.pomoSeconds = {seconds_total};
+            document.getElementById('pomo-display').innerText = formatTime(window.pomoSeconds);
+            document.getElementById('pomo-msg').innerText = 'Timer reset.';
+            const btn = document.getElementById('pomo-btn-start');
+            btn.style.opacity = '1';
+            btn.innerText = '▶ Start';
         }}
         </script>
 
@@ -569,6 +567,8 @@ elif page == "⏱️  Pomodoro":
             if sum(chart_data[c]) > 0:
                 fig2.add_trace(go.Bar(name=c, x=day_labels, y=chart_data[c],
                                       marker_color=color_map[c]))
+        
+        # Fixed rgba colors for Plotly validation
         fig2.update_layout(
             barmode="stack",
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -609,7 +609,6 @@ elif page == "⏱️  Pomodoro":
         else:
             st.markdown(f"<div style='font-size:.84rem;color:{TEXTD};'>No sessions logged yet.</div>",
                         unsafe_allow_html=True)
-
 
 # ════════════════════════════════════════════════
 #  PAGE 3 — CALENDAR
