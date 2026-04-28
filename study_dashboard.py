@@ -450,96 +450,175 @@ if page == "📊  Progress":
 #  PAGE 2 — POMODORO
 # ════════════════════════════════════════════════
 elif page == "⏱️  Pomodoro":
+    import streamlit.components.v1 as components
     heading("Pomodoro Timer", "Focus sessions · 25 min work / 5 min break")
 
     col_timer, col_log = st.columns([2, 3], gap="large")
 
     with col_timer:
-        st.markdown(f"""
-        <div style="background:{WHITE};border:1.5px solid {BORDER};border-radius:16px;
-                    padding:2rem;text-align:center;box-shadow:{'0 4px 20px rgba(0,0,0,0.2)' if dark else '0 4px 20px rgba(0,0,0,0.07)'};">
-            <div style="{label_style()}margin-bottom:1rem;">Select Course</div>
-        """, unsafe_allow_html=True)
-
-        pomo_course = st.selectbox("Course", list(data.keys()), key="pomo_course",
-                                   label_visibility="collapsed")
+        pomo_course = st.selectbox("Studying for", list(data.keys()), key="pomo_course")
         pomo_type   = st.radio("Session type", ["🍅 Work (25 min)", "☕ Break (5 min)"],
                                horizontal=True, key="pomo_type")
-        minutes = 25 if "Work" in pomo_type else 5
+        minutes       = 25 if "Work" in pomo_type else 5
         seconds_total = minutes * 60
+        msg_text      = "Focus time — stay off your phone!" if "Work" in pomo_type else "Take a proper break ☕"
 
-        # Updated Timer Display and JavaScript
-        st.markdown(f"""
-        <div id="pomo-display" style="font-family:'Playfair Display',serif;font-size:4.5rem;font-weight:800;
-                    color:{ACCENT};letter-spacing:-.02em;margin:1.5rem 0 .5rem;">
-            {minutes:02d}:00
+        components.html(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@800&family=DM+Sans:wght@500&family=DM+Mono:wght@400&display=swap');
+          * {{ margin:0; padding:0; box-sizing:border-box; }}
+          body {{
+            background: {'#161b27' if dark else '#ffffff'};
+            display: flex; flex-direction: column; align-items: center;
+            padding: 1.8rem 1rem 1.4rem; font-family: 'DM Sans', sans-serif;
+          }}
+          #pomo-display {{
+            font-family: 'Playfair Display', serif;
+            font-size: 5rem; font-weight: 800;
+            color: {ACCENT}; letter-spacing: -.02em;
+            margin: .5rem 0 .4rem; line-height: 1;
+            transition: color .4s;
+          }}
+          #pomo-ring {{
+            position: relative; width: 200px; height: 200px; margin-bottom: .8rem;
+          }}
+          #pomo-ring svg {{ transform: rotate(-90deg); }}
+          #pomo-track {{ stroke: {'#2a3248' if dark else '#f0ede8'}; }}
+          #pomo-fill  {{ stroke: {ACCENT}; transition: stroke-dashoffset 1s linear; stroke-dasharray: 565.5; stroke-dashoffset: 0; }}
+          #pomo-center {{
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+            text-align: center;
+          }}
+          #pomo-time {{
+            font-family: 'Playfair Display', serif; font-size: 2.4rem;
+            font-weight: 800; color: {ACCENT}; line-height: 1; transition: color .4s;
+          }}
+          #pomo-label {{
+            font-family: 'DM Mono', monospace; font-size: .62rem;
+            color: {'#5a6080' if dark else '#9a948c'}; letter-spacing: .1em;
+            text-transform: uppercase; margin-top: 3px;
+          }}
+          #pomo-msg {{
+            font-size: .82rem; color: {'#9aa0b8' if dark else '#4a4640'};
+            margin-bottom: 1.2rem; text-align: center; max-width: 240px;
+          }}
+          .btn-row {{ display: flex; gap: .6rem; justify-content: center; flex-wrap: wrap; }}
+          .btn-primary {{
+            background: {ACCENT}; color: white; border: none; border-radius: 8px;
+            padding: .6rem 1.8rem; font-family: 'DM Sans', sans-serif;
+            font-size: .88rem; font-weight: 600; cursor: pointer;
+            transition: opacity .2s;
+          }}
+          .btn-primary:disabled {{ opacity: .5; cursor: default; }}
+          .btn-secondary {{
+            background: {'#1c2333' if dark else '#ffffff'};
+            color: {'#9aa0b8' if dark else '#4a4640'};
+            border: 1.5px solid {'#2a3248' if dark else '#e2ddd6'};
+            border-radius: 8px; padding: .6rem 1.4rem;
+            font-family: 'DM Sans', sans-serif; font-size: .88rem;
+            font-weight: 500; cursor: pointer; transition: all .15s;
+          }}
+          #pomo-done {{
+            font-size: .82rem; color: #52b788; margin-top: .8rem;
+            font-weight: 600; min-height: 1.2rem; text-align: center;
+          }}
+        </style>
+        </head>
+        <body>
+
+        <div id="pomo-ring">
+          <svg width="200" height="200" viewBox="0 0 200 200">
+            <circle id="pomo-track" cx="100" cy="100" r="90" fill="none" stroke-width="10"/>
+            <circle id="pomo-fill"  cx="100" cy="100" r="90" fill="none" stroke-width="10"
+                    stroke-linecap="round"/>
+          </svg>
+          <div id="pomo-center">
+            <div id="pomo-time">{minutes:02d}:00</div>
+            <div id="pomo-label">{'FOCUS' if 'Work' in pomo_type else 'BREAK'}</div>
+          </div>
         </div>
-        <div id="pomo-msg" style="font-size:.82rem;color:{TEXTD};margin-bottom:1.5rem;">
-            {"Focus time — stay off your phone!" if "Work" in pomo_type else "Take a proper break ☕"}
+
+        <div id="pomo-msg">{msg_text}</div>
+
+        <div class="btn-row">
+          <button class="btn-primary"  id="btn-start" onclick="startPomo()">▶  Start</button>
+          <button class="btn-secondary" onclick="resetPomo()">↺  Reset</button>
         </div>
+        <div id="pomo-done"></div>
 
         <script>
-        // Ensure intervals are cleared if script reruns
-        if (window.pomoInterval) clearInterval(window.pomoInterval);
-        
-        window.pomoSeconds = {seconds_total};
-        window.pomoInterval = null;
+          const TOTAL = {seconds_total};
+          const CIRC  = 2 * Math.PI * 90;   // 565.49
+          let secsLeft   = TOTAL;
+          let interval   = null;
+          let running    = false;
 
-        function formatTime(s) {{
-            const m = Math.floor(s/60);
-            const sec = s%60;
-            return String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0');
-        }}
+          const fillEl   = document.getElementById('pomo-fill');
+          const timeEl   = document.getElementById('pomo-time');
+          const msgEl    = document.getElementById('pomo-msg');
+          const doneEl   = document.getElementById('pomo-done');
+          const startBtn = document.getElementById('btn-start');
 
-        window.startPomo = function() {{
-            if (window.pomoInterval) return;
-            const btn = document.getElementById('pomo-btn-start');
-            btn.style.opacity = '0.5';
-            btn.innerText = 'Running...';
-            
-            window.pomoInterval = setInterval(() => {{
-                window.pomoSeconds--;
-                document.getElementById('pomo-display').innerText = formatTime(window.pomoSeconds);
-                if (window.pomoSeconds <= 0) {{
-                    clearInterval(window.pomoInterval);
-                    window.pomoInterval = null;
-                    document.getElementById('pomo-msg').innerText = '✅ Session complete!';
-                    document.getElementById('pomo-display').style.color = '#52b788';
-                    try {{ new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play(); }} catch(e) {{}}
-                }}
-            }}, 1000);
-        }}
+          fillEl.style.strokeDasharray  = CIRC;
+          fillEl.style.strokeDashoffset = 0;
 
-        window.resetPomo = function() {{
-            clearInterval(window.pomoInterval);
-            window.pomoInterval = null;
-            window.pomoSeconds = {seconds_total};
-            document.getElementById('pomo-display').innerText = formatTime(window.pomoSeconds);
-            document.getElementById('pomo-msg').innerText = 'Timer reset.';
-            const btn = document.getElementById('pomo-btn-start');
-            btn.style.opacity = '1';
-            btn.innerText = '▶ Start';
-        }}
+          function fmt(s) {{
+            return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+          }}
+
+          function updateRing() {{
+            const offset = CIRC * (1 - secsLeft / TOTAL);
+            fillEl.style.strokeDashoffset = offset;
+          }}
+
+          function tick() {{
+            if (secsLeft <= 0) {{
+              clearInterval(interval); interval = null; running = false;
+              timeEl.innerText  = '00:00';
+              timeEl.style.color = '#52b788';
+              fillEl.style.stroke = '#52b788';
+              msgEl.innerText   = '';
+              doneEl.innerText  = '✅ Session complete!';
+              startBtn.disabled = true;
+              startBtn.innerText = 'Done';
+              try {{ new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play(); }} catch(e) {{}}
+              return;
+            }}
+            secsLeft--;
+            timeEl.innerText = fmt(secsLeft);
+            updateRing();
+          }}
+
+          function startPomo() {{
+            if (running) return;
+            running = true;
+            startBtn.disabled  = true;
+            startBtn.innerText = 'Running…';
+            doneEl.innerText   = '';
+            interval = setInterval(tick, 1000);
+          }}
+
+          function resetPomo() {{
+            clearInterval(interval); interval = null; running = false;
+            secsLeft = TOTAL;
+            timeEl.innerText  = fmt(secsLeft);
+            timeEl.style.color = '{ACCENT}';
+            fillEl.style.stroke = '{ACCENT}';
+            fillEl.style.strokeDashoffset = 0;
+            msgEl.innerText   = '{msg_text}';
+            doneEl.innerText  = '';
+            startBtn.disabled  = false;
+            startBtn.innerText = '▶  Start';
+          }}
         </script>
+        </body>
+        </html>
+        """, height=480)
 
-        <div style="display:flex;gap:.6rem;justify-content:center;flex-wrap:wrap;margin-top:.5rem;">
-            <button id="pomo-btn-start" onclick="startPomo()"
-                style="background:{ACCENT};color:white;border:none;border-radius:8px;
-                       padding:.6rem 1.8rem;font-family:'DM Sans',sans-serif;
-                       font-size:.88rem;font-weight:600;cursor:pointer;">
-                ▶  Start
-            </button>
-            <button onclick="resetPomo()"
-                style="background:{WHITE};color:{TEXTM};border:1.5px solid {BORDER};
-                       border-radius:8px;padding:.6rem 1.4rem;font-family:'DM Sans',sans-serif;
-                       font-size:.88rem;font-weight:500;cursor:pointer;">
-                ↺  Reset
-            </button>
-        </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("<div style='height:.8rem'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:.6rem'></div>", unsafe_allow_html=True)
 
         # Log a completed session manually
         st.markdown(f'<div style="{label_style()}margin-bottom:.5rem;">Log Completed Session</div>',
@@ -563,10 +642,9 @@ elif page == "⏱️  Pomodoro":
                     unsafe_allow_html=True)
 
         plog = meta.get("pomodoro_log", {})
-        last7 = [(today - timedelta(days=i)) for i in range(6,-1,-1)]
+        last7     = [(today - timedelta(days=i)) for i in range(6,-1,-1)]
         last7_str = [str(d) for d in last7]
 
-        # Build chart data
         chart_data = {c: [] for c in course_list}
         for ds in last7_str:
             day_log = plog.get(ds, {})
@@ -579,23 +657,19 @@ elif page == "⏱️  Pomodoro":
             if sum(chart_data[c]) > 0:
                 fig2.add_trace(go.Bar(name=c, x=day_labels, y=chart_data[c],
                                       marker_color=color_map[c]))
-        
-        # Fixed rgba colors for Plotly validation
         fig2.update_layout(
             barmode="stack",
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             font=dict(family="DM Sans", color=TEXTM),
             yaxis=dict(title="Minutes", showgrid=True,
-                       gridcolor="rgba(42, 50, 72, 0.19)" if dark else "rgba(226, 221, 214, 0.5)",
+                       gridcolor="rgba(42,50,72,0.19)" if dark else "rgba(226,221,214,0.5)",
                        zeroline=False, tickfont=dict(family="DM Mono",size=10,color=TEXTD)),
             xaxis=dict(showgrid=False, tickfont=dict(family="DM Mono",size=10,color=TEXTD)),
             margin=dict(t=10,b=5,l=0,r=0), height=280,
-            legend=dict(font=dict(family="DM Sans",size=11,color=TEXTM),
-                        bgcolor="rgba(0,0,0,0)")
+            legend=dict(font=dict(family="DM Sans",size=11,color=TEXTM), bgcolor="rgba(0,0,0,0)")
         )
         st.plotly_chart(fig2, use_container_width=True, key="pomo_chart")
 
-        # Total per course
         st.markdown(f'<div style="{label_style()}margin-bottom:.6rem;margin-top:.4rem;">All-Time Totals</div>',
                     unsafe_allow_html=True)
         totals = {}
@@ -604,9 +678,9 @@ elif page == "⏱️  Pomodoro":
                 totals[c] = totals.get(c, 0) + m
         if totals:
             for c, mins in sorted(totals.items(), key=lambda x: -x[1]):
-                hrs  = mins // 60; rem = mins % 60
+                hrs = mins // 60; rem = mins % 60
                 time_str = f"{hrs}h {rem}m" if hrs else f"{rem}m"
-                clr = color_map.get(c, "#888")
+                clr     = color_map.get(c, "#888")
                 pct_bar = min(100, int(mins / max(totals.values()) * 100))
                 st.markdown(f"""
                 <div style="margin-bottom:.5rem;">
