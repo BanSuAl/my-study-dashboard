@@ -14,20 +14,37 @@ st.set_page_config(page_title="Study Dashboard · KFUPM", layout="wide", page_ic
 SHEET_ID = "1aAoWHwD9t4UvChV6y2cyGjAGXI3jgFTXWISII67UBM4"
 
 SCOPES = [
-    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
 @st.cache_resource
-def get_sheet():
+def get_gc():
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"], scopes=SCOPES
     )
-    gc = gspread.authorize(creds)
-    return gc.open_by_key(SHEET_ID)
+    return gspread.authorize(creds)
+
+def get_sheet():
+    return get_gc().open_by_key(SHEET_ID)
 
 def ws(name):
-    return get_sheet().worksheet(name)
+    try:
+        return get_sheet().worksheet(name)
+    except gspread.exceptions.WorksheetNotFound:
+        sh = get_sheet()
+        headers = {
+            "topics":       ["course","topic","done"],
+            "events":       ["title","date","type","course","notes"],
+            "weekly_plan":  ["day","course"],
+            "pomodoro_log": ["date","course","minutes"],
+            "priorities":   ["key","level"],
+            "streak":       ["last_date","count"],
+        }
+        sheet = sh.add_worksheet(title=name, rows=1000, cols=10)
+        if name in headers:
+            sheet.append_row(headers[name])
+        return sheet
 
 # ── default course data ───────────────────────
 DEFAULT_DATA = {
