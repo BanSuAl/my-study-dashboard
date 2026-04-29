@@ -1,5 +1,5 @@
 import streamlit as st
-import json, os, calendar, base64
+import json, os, calendar, base64, time
 import pandas as pd
 import plotly.graph_objects as go
 import requests
@@ -58,37 +58,51 @@ DEFAULT_JSON = {
 COURSE_COLORS = ["#4361ee","#e63946","#7209b7","#2d6a4f","#e76f51","#0077b6"]
 DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 
-# ── GitHub read/write ─────────────────────────
+# ── GitHub read/write (Hardened) ──────────────
 def github_read():
-    """Read data.json from GitHub."""
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DATA_FILE}"
-    r = requests.get(url, headers=HEADERS)
-    if r.status_code == 404:
+    """Read data.json from GitHub gracefully."""
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DATA_FILE}"
+        r = requests.get(url, headers=HEADERS)
+        if r.status_code == 404:
+            return DEFAULT_JSON.copy(), None
+        r.raise_for_status()
+        data = r.json()
+        
+        content_b64 = data.get("content", "")
+        if not content_b64:
+            return DEFAULT_JSON.copy(), data.get("sha")
+            
+        content = base64.b64decode(content_b64).decode("utf-8")
+        return json.loads(content), data["sha"]
+    except Exception as e:
+        st.error(f"GitHub Sync Error (Read): {e}")
         return DEFAULT_JSON.copy(), None
-    r.raise_for_status()
-    data = r.json()
-    content = base64.b64decode(data["content"]).decode("utf-8")
-    return json.loads(content), data["sha"]
 
 def github_write(obj, sha=None):
-    """Write data.json to GitHub."""
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DATA_FILE}"
-    content = base64.b64encode(json.dumps(obj, indent=2).encode()).decode()
-    body = {"message": "update data", "content": content}
-    if sha:
-        body["sha"] = sha
-    r = requests.put(url, headers=HEADERS, json=body)
-    r.raise_for_status()
+    """Write data.json to GitHub gracefully."""
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DATA_FILE}"
+        content = base64.b64encode(json.dumps(obj, indent=2).encode()).decode()
+        body = {"message": "update data", "content": content}
+        if sha:
+            body["sha"] = sha
+        r = requests.put(url, headers=HEADERS, json=body)
+        r.raise_for_status()
+        return r.json().get("content", {}).get("sha")
+    except Exception as e:
+        st.error(f"GitHub Sync Error (Write): {e}")
+        return sha
 
 # ── Cache all data in session state ───────────
 def get_all():
     if "db" not in st.session_state:
         db, sha = github_read()
-        # Merge default courses
-        for c, topics in DEFAULT_DATA.items():
-            db["courses"].setdefault(c, {})
-            for t, v in topics.items():
-                db["courses"][c].setdefault(t, v)
+        
+        # Only merge defaults if the DB is completely empty (prevents zombie courses)
+        if not db.get("courses"):
+            db = DEFAULT_JSON.copy()
+            
         st.session_state.db  = db
         st.session_state.sha = sha
     return st.session_state.db
@@ -97,14 +111,13 @@ def save_all():
     """Save everything back to GitHub."""
     db  = st.session_state.db
     sha = st.session_state.get("sha")
-    github_write(db, sha)
-    # refresh sha
-    _, new_sha = github_read()
-    st.session_state.sha = new_sha
+    new_sha = github_write(db, sha)
+    if new_sha:
+        st.session_state.sha = new_sha
 
-# ── Load/save wrappers (same API as before) ───
+# ── Load/save wrappers ────────────────────────
 def load_data():
-    return get_all()["courses"]
+    return get_all().get("courses", {})
 
 def load_events():
     return get_all().get("events", [])
@@ -209,9 +222,13 @@ hr{{border-color:var(--hr)!important;}}
 
 # ── session state defaults ────────────────────
 if "dark" not in st.session_state: st.session_state.dark = False
-if "pomo_running" not in st.session_state: st.session_state.pomo_running = False
 if "cal_year"  not in st.session_state: st.session_state.cal_year  = date.today().year
 if "cal_month" not in st.session_state: st.session_state.cal_month = date.today().month
+
+# Pomodoro state defaults
+if "pomo_state" not in st.session_state: st.session_state.pomo_state = "stopped"
+if "pomo_end_time" not in st.session_state: st.session_state.pomo_end_time = None
+if "last_pomo_type" not in st.session_state: st.session_state.last_pomo_type = None
 
 # ── load all state ────────────────────────────
 data   = load_data()
@@ -505,7 +522,7 @@ if page == "📊  Progress":
 
 
 # ════════════════════════════════════════════════
-#  PAGE 2 — POMODORO
+#  PAGE 2 — POMODORO (State-Synced Fix)
 # ════════════════════════════════════════════════
 elif page == "⏱️  Pomodoro":
     import streamlit.components.v1 as components
@@ -517,10 +534,28 @@ elif page == "⏱️  Pomodoro":
         pomo_course = st.selectbox("Studying for", list(data.keys()), key="pomo_course")
         pomo_type   = st.radio("Session type", ["🍅 Work (25 min)", "☕ Break (5 min)"],
                                horizontal=True, key="pomo_type")
+        
         minutes       = 25 if "Work" in pomo_type else 5
         seconds_total = minutes * 60
         msg_text      = "Focus time — stay off your phone!" if "Work" in pomo_type else "Take a proper break ☕"
 
+        # Check if user switched tabs, forcing a stop
+        if st.session_state.last_pomo_type != pomo_type:
+            st.session_state.pomo_state = "stopped"
+            st.session_state.pomo_end_time = None
+            st.session_state.last_pomo_type = pomo_type
+
+        # Calculate exact seconds remaining synced with Python backend
+        secs_left = seconds_total
+        if st.session_state.pomo_state == "running" and st.session_state.pomo_end_time:
+            secs_left = int(st.session_state.pomo_end_time - time.time())
+            if secs_left <= 0:
+                secs_left = 0
+                st.session_state.pomo_state = "done"
+
+        is_running_js = "true" if st.session_state.pomo_state == "running" else "false"
+
+        # The HTML/JS Component
         components.html(f"""
         <!DOCTYPE html>
         <html>
@@ -563,22 +598,6 @@ elif page == "⏱️  Pomodoro":
             font-size: .82rem; color: {'#9aa0b8' if dark else '#4a4640'};
             margin-bottom: 1.2rem; text-align: center; max-width: 240px;
           }}
-          .btn-row {{ display: flex; gap: .6rem; justify-content: center; flex-wrap: wrap; }}
-          .btn-primary {{
-            background: {ACCENT}; color: white; border: none; border-radius: 8px;
-            padding: .6rem 1.8rem; font-family: 'DM Sans', sans-serif;
-            font-size: .88rem; font-weight: 600; cursor: pointer;
-            transition: opacity .2s;
-          }}
-          .btn-primary:disabled {{ opacity: .5; cursor: default; }}
-          .btn-secondary {{
-            background: {'#1c2333' if dark else '#ffffff'};
-            color: {'#9aa0b8' if dark else '#4a4640'};
-            border: 1.5px solid {'#2a3248' if dark else '#e2ddd6'};
-            border-radius: 8px; padding: .6rem 1.4rem;
-            font-family: 'DM Sans', sans-serif; font-size: .88rem;
-            font-weight: 500; cursor: pointer; transition: all .15s;
-          }}
           #pomo-done {{
             font-size: .82rem; color: #52b788; margin-top: .8rem;
             font-weight: 600; min-height: 1.2rem; text-align: center;
@@ -594,35 +613,28 @@ elif page == "⏱️  Pomodoro":
                     stroke-linecap="round"/>
           </svg>
           <div id="pomo-center">
-            <div id="pomo-time">{minutes:02d}:00</div>
+            <div id="pomo-time">00:00</div>
             <div id="pomo-label">{'FOCUS' if 'Work' in pomo_type else 'BREAK'}</div>
           </div>
         </div>
 
         <div id="pomo-msg">{msg_text}</div>
-
-        <div class="btn-row">
-          <button class="btn-primary"  id="btn-start" onclick="startPomo()">▶  Start</button>
-          <button class="btn-secondary" onclick="resetPomo()">↺  Reset</button>
-        </div>
         <div id="pomo-done"></div>
 
         <script>
           const TOTAL = {seconds_total};
           const CIRC  = 2 * Math.PI * 90;   // 565.49
-          let secsLeft   = TOTAL;
+          let secsLeft   = {secs_left};
+          let running    = {is_running_js};
           let interval   = null;
-          let running    = false;
 
           const fillEl   = document.getElementById('pomo-fill');
           const timeEl   = document.getElementById('pomo-time');
           const msgEl    = document.getElementById('pomo-msg');
           const doneEl   = document.getElementById('pomo-done');
-          const startBtn = document.getElementById('btn-start');
 
           fillEl.style.strokeDasharray  = CIRC;
-          fillEl.style.strokeDashoffset = 0;
-
+          
           function fmt(s) {{
             return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
           }}
@@ -640,8 +652,6 @@ elif page == "⏱️  Pomodoro":
               fillEl.style.stroke = '#52b788';
               msgEl.innerText   = '';
               doneEl.innerText  = '✅ Session complete!';
-              startBtn.disabled = true;
-              startBtn.innerText = 'Done';
               try {{ new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play(); }} catch(e) {{}}
               return;
             }}
@@ -650,31 +660,38 @@ elif page == "⏱️  Pomodoro":
             updateRing();
           }}
 
-          function startPomo() {{
-            if (running) return;
-            running = true;
-            startBtn.disabled  = true;
-            startBtn.innerText = 'Running…';
-            doneEl.innerText   = '';
-            interval = setInterval(tick, 1000);
-          }}
-
-          function resetPomo() {{
-            clearInterval(interval); interval = null; running = false;
-            secsLeft = TOTAL;
-            timeEl.innerText  = fmt(secsLeft);
-            timeEl.style.color = '{ACCENT}';
-            fillEl.style.stroke = '{ACCENT}';
-            fillEl.style.strokeDashoffset = 0;
-            msgEl.innerText   = '{msg_text}';
-            doneEl.innerText  = '';
-            startBtn.disabled  = false;
-            startBtn.innerText = '▶  Start';
+          // Initial render based on injected python state
+          timeEl.innerText = fmt(secsLeft);
+          updateRing();
+          
+          if (secsLeft <= 0 && {secs_left} !== TOTAL) {{
+             timeEl.innerText = '00:00';
+             timeEl.style.color = '#52b788';
+             fillEl.style.stroke = '#52b788';
+             doneEl.innerText = '✅ Session complete!';
+          }} else if (running) {{
+             interval = setInterval(tick, 1000);
           }}
         </script>
         </body>
         </html>
-        """, height=480)
+        """, height=380)
+
+        # Native Streamlit buttons to control Python state properly
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.session_state.pomo_state == "running":
+                st.button("Running...", disabled=True, use_container_width=True)
+            else:
+                if st.button("▶ Start Timer", use_container_width=True):
+                    st.session_state.pomo_state = "running"
+                    st.session_state.pomo_end_time = time.time() + seconds_total
+                    st.rerun()
+        with col_btn2:
+            if st.button("↺ Reset", use_container_width=True):
+                st.session_state.pomo_state = "stopped"
+                st.session_state.pomo_end_time = None
+                st.rerun()
 
         st.markdown("<div style='height:.6rem'></div>", unsafe_allow_html=True)
 
