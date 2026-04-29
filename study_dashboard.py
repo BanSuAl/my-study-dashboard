@@ -97,6 +97,17 @@ def db_delete_all(table):
     except Exception:
         return False
 
+def db_batch_upsert(table, rows):
+    """Safer than delete+insert — updates existing, inserts new."""
+    if not rows: return True
+    h = {**HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"}
+    try:
+        r = requests.post(f"{BASE}/{table}", headers=h,
+                         json=rows if isinstance(rows, list) else [rows], timeout=10)
+        return r.ok
+    except Exception:
+        return False
+
 def safe_date(date_str):
     """Safe date parsing — no crashes on bad data."""
     try:
@@ -165,15 +176,20 @@ def load_meta():
 # ── Save functions ────────────────────────────
 def save_data(data):
     """Upsert all topics — handles new and existing topics safely."""
-    rows = db_get("topics", "select=id,course,topic,done")
-    existing = {(r["course"], r["topic"]): r["id"] for r in rows}
-    for c, ts in data.items():
-        for t, done in ts.items():
-            if (c, t) in existing:
-                db_update("topics", {"done": done}, existing[(c, t)])
-            else:
-                db_insert("topics", {"course": c, "topic": t, "done": done})
-    load_data.clear()
+    try:
+        rows = db_get("topics", "select=id,course,topic,done")
+        existing = {(r["course"], r["topic"]): r["id"] for r in rows}
+        for c, ts in data.items():
+            for t, done in ts.items():
+                if (c, t) in existing:
+                    db_update("topics", {"done": done}, existing[(c, t)])
+                else:
+                    db_insert("topics", {"course": c, "topic": t, "done": done})
+        load_data.clear()
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ Could not save topic data: {e}")
+        return False
 
 def save_events(events):
     """Safe replace — delete then insert with error handling."""
@@ -185,16 +201,15 @@ def save_events(events):
     load_events.clear()
 
 def save_meta(meta):
-    """Use upsert for streak to prevent data loss on network failure."""
+    """Use batch upsert where possible to prevent data loss."""
     try:
-        # Streak — upsert to avoid delete+insert risk
+        # Streak
         db_delete_all("streak")
         db_insert("streak", {"last_date": meta.get("streak_last",""),
                               "count": meta.get("streak_count", 0)})
-        # Priorities
-        db_delete_all("priorities")
+        # Priorities — use upsert (has unique key column)
         if meta.get("priorities"):
-            db_insert("priorities", [{"key": k, "level": v}
+            db_batch_upsert("priorities", [{"key": k, "level": v}
                 for k, v in meta["priorities"].items() if v])
         # Weekly plan
         db_delete_all("weekly_plan")
@@ -206,9 +221,11 @@ def save_meta(meta):
         if meta.get("pomodoro_log"):
             db_insert("pomodoro_log", [{"date": d, "course": c, "minutes": m}
                 for d, cs in meta["pomodoro_log"].items() for c, m in cs.items()])
+        load_meta.clear()
+        return True
     except Exception as e:
-        st.warning(f"Could not save some data: {e}")
-    load_meta.clear()
+        st.warning(f"⚠️ Could not save some data: {e}")
+        return False
 
 # ── streak helper ─────────────────────────────
 def update_streak(meta):
@@ -515,7 +532,7 @@ if page == "📊  Progress":
     pomo_days = len(meta.get("pomodoro_log", {}))
     total_mins = sum(sum(v.values()) for v in meta.get("pomodoro_log", {}).values())
     done_all_badges = sum(sum(1 for s in v.values() if s) for v in data.values())
-    courses_done = sum(1 for c in data.values() if all(c.values()) and len(c) > 0)
+    courses_done = sum(1 for c in data.values() if c and all(c.values()))
 
     badges = []
     if streak >= 1:   badges.append(("🔥", f"{streak} Day Streak", "#e63946", "#fde8ea"))
@@ -547,7 +564,7 @@ if page == "📊  Progress":
     # ── DAILY STUDY GOAL ─────────────────────────────────────────
     today_str = str(today)
     today_mins = sum(meta.get("pomodoro_log", {}).get(today_str, {}).values())
-    goal_mins = 120  # 2 hours default daily goal
+    goal_mins = int(meta.get("priorities", {}).get("__daily_goal__", 120) or 120)
     goal_pct  = min(100, int(today_mins / goal_mins * 100))
     goal_clr  = "#e63946" if goal_pct < 33 else ("#e76f51" if goal_pct < 66 else "#2d6a4f")
     goal_emoji = "🔴" if goal_pct < 33 else ("🟠" if goal_pct < 66 else "🟢")
@@ -569,6 +586,16 @@ if page == "📊  Progress":
              else f"{goal_mins - today_mins} min remaining to reach your daily goal"}</div>
     </div>
     """, unsafe_allow_html=True)
+
+    # Daily goal setter
+    with st.expander("⚙️ Set Daily Study Goal"):
+        current_goal = int(meta.get("priorities", {}).get("__daily_goal__", 120) or 120)
+        new_goal = st.slider("Daily goal (minutes)", 30, 480, current_goal, 30,
+                             key="daily_goal_slider")
+        if new_goal != current_goal:
+            meta.setdefault("priorities", {})["__daily_goal__"] = new_goal
+            save_meta(meta)
+            st.rerun()
 
     # Stats row
     pct_all = int(done_all/total_all*100) if total_all else 0
