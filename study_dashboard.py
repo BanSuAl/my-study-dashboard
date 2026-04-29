@@ -76,8 +76,8 @@ def load_data():
             for topic, done in topics.items():
                 seed.append([course, topic, str(done)])
         sheet.append_rows(seed, value_input_option="RAW")
-        return {c: dict(t) for c, t in
-                [(c, {r["topic"]: False for r in DEFAULT_DATA[c]}) for c in DEFAULT_DATA]}
+        return {course: {topic: done for topic, done in topics.items()}
+                for course, topics in DEFAULT_DATA.items()}
 
     merged = {}
     for row in rows:
