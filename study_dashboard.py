@@ -4,18 +4,13 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
 from pathlib import Path
-import gspread
-from google.oauth2.service_account import Credentials
+from supabase import create_client
 
-# ── page config ──────────────────────────────
 st.set_page_config(page_title="Study Dashboard · KFUPM", layout="wide", page_icon="◈")
 
-# ── Google Sheets config ──────────────────────
-SHEET_ID = "1aAoWHwD9t4UvChV6y2cyGjAGXI3jgFTXWISII67UBM4"
-SCOPES   = ["https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"]
+SUPABASE_URL = "https://bbtumvmmhqghhhggexkw.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJidHVtdm1taHFnaGhoZ2dleGt3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczODI0OTksImV4cCI6MjA5Mjk1ODQ5OX0.mhBofxDw9_TsVUMgj74v6C6aTEmbjQ-FwBtsjtuTLwA"
 
-# ── default course data ───────────────────────
 DEFAULT_DATA = {
     "CHE 306": {
         "Ch5 L1": False, "Ch7 L2": False, "Ch7 L3": False, "Ch7 L4": False,
@@ -46,183 +41,91 @@ DEFAULT_DATA = {
 COURSE_COLORS = ["#4361ee","#e63946","#7209b7","#2d6a4f","#e76f51","#0077b6"]
 DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 
-# ══════════════════════════════════════════════
-#  GOOGLE SHEETS — SINGLE CONNECTION + BATCH READ
-# ══════════════════════════════════════════════
-
+# ── Supabase connection ────────────────────────
 @st.cache_resource
-def get_gc():
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"], scopes=SCOPES)
-    return gspread.authorize(creds)
+def get_db():
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
-@st.cache_resource
-def get_spreadsheet():
-    return get_gc().open_by_key(SHEET_ID)
-
-def ws(name):
-    sh = get_spreadsheet()
-    try:
-        return sh.worksheet(name)
-    except gspread.exceptions.WorksheetNotFound:
-        headers = {
-            "topics":       ["course","topic","done"],
-            "events":       ["title","date","type","course","notes"],
-            "weekly_plan":  ["day","course"],
-            "pomodoro_log": ["date","course","minutes"],
-            "priorities":   ["key","level"],
-            "streak":       ["last_date","count"],
-        }
-        sheet = sh.add_worksheet(title=name, rows=1000, cols=10)
-        if name in headers:
-            sheet.append_row(headers[name])
-        return sheet
-
-# ── Read all sheets in ONE batch call ──────────
-@st.cache_data(ttl=60)
-def fetch_all_data():
-    """Read ALL sheets in a single API call. Cached for 60 seconds."""
-    try:
-        sh  = get_spreadsheet()
-        all_sheets = sh.fetch_sheet_metadata()
-        result = {}
-        for s in all_sheets.get("sheets", []):
-            title = s["properties"]["title"]
-            result[title] = sh.worksheet(title).get_all_values()
-        return result
-    except Exception as e:
-        return {}
-
-def parse_sheet(raw, sheet_name):
-    """Convert raw rows to list of dicts."""
-    if not raw or len(raw) < 2:
-        return []
-    headers = raw[0]
-    if not any(headers):
-        return []
-    return [dict(zip(headers, row)) for row in raw[1:] if any(row)]
-
-# ── Load functions (use cache) ─────────────────
+# ── Load functions ─────────────────────────────
+@st.cache_data(ttl=30)
 def load_data():
-    raw  = fetch_all_data()
-    rows = parse_sheet(raw.get("topics", []), "topics")
-
+    db   = get_db()
+    rows = db.table("topics").select("*").execute().data
     if not rows:
-        # First run — seed default data
-        sheet = ws("topics")
-        seed  = []
-        for course, topics in DEFAULT_DATA.items():
-            for topic, done in topics.items():
-                seed.append([course, topic, str(done)])
-        sheet.append_rows(seed, value_input_option="RAW")
-        fetch_all_data.clear()
-        return {c: dict(t) for c, t in DEFAULT_DATA.items()}
-
+        seed = [{"course": c, "topic": t, "done": False}
+                for c, ts in DEFAULT_DATA.items() for t in ts]
+        db.table("topics").insert(seed).execute()
+        return {c: dict(ts) for c, ts in DEFAULT_DATA.items()}
     merged = {}
-    for row in rows:
-        course = row.get("course","")
-        topic  = row.get("topic","")
-        done   = str(row.get("done","FALSE")).upper() in ("TRUE","1","YES")
-        if course and topic:
-            merged.setdefault(course, {})[topic] = done
-
-    # Add any missing default topics
-    new_rows = []
-    for course, topics in DEFAULT_DATA.items():
-        for topic, default_val in topics.items():
-            if course not in merged:
-                merged[course] = {}
-            if topic not in merged[course]:
-                merged[course][topic] = default_val
-                new_rows.append([course, topic, str(default_val)])
-    if new_rows:
-        ws("topics").append_rows(new_rows)
-        fetch_all_data.clear()
+    for r in rows:
+        merged.setdefault(r["course"], {})[r["topic"]] = bool(r["done"])
+    for c, ts in DEFAULT_DATA.items():
+        for t, dv in ts.items():
+            merged.setdefault(c, {})
+            if t not in merged[c]:
+                merged[c][t] = dv
+                db.table("topics").insert({"course":c,"topic":t,"done":dv}).execute()
     return merged
 
+@st.cache_data(ttl=30)
 def load_events():
-    raw  = fetch_all_data()
-    rows = parse_sheet(raw.get("events", []), "events")
-    return [{"title": r.get("title",""), "date": r.get("date",""),
-             "type":  r.get("type","Other"),
-             "course": r.get("course","General"),
-             "notes": r.get("notes","")} for r in rows]
+    rows = get_db().table("events").select("*").execute().data
+    return [{"title":r["title"],"date":r["date"],"type":r["type"],
+             "course":r.get("course","General"),"notes":r.get("notes","")} for r in rows]
 
+@st.cache_data(ttl=30)
 def load_meta():
-    raw  = fetch_all_data()
-    meta = {"streak_last": None, "streak_count": 0,
-            "priorities": {}, "weekly_plan": {}, "pomodoro_log": {}}
-
-    for r in parse_sheet(raw.get("streak", []), "streak"):
-        meta["streak_last"]  = r.get("last_date") or None
-        meta["streak_count"] = int(r.get("count", 0) or 0)
-        break
-
-    for r in parse_sheet(raw.get("priorities", []), "priorities"):
-        if r.get("key"):
-            meta["priorities"][r["key"]] = r.get("level","")
-
-    for r in parse_sheet(raw.get("weekly_plan", []), "weekly_plan"):
-        day = r.get("day",""); c = r.get("course","")
-        if day and c:
-            meta["weekly_plan"].setdefault(day, []).append(c)
-
-    for r in parse_sheet(raw.get("pomodoro_log", []), "pomodoro_log"):
-        d = r.get("date",""); c = r.get("course","")
-        m = int(r.get("minutes", 0) or 0)
-        if d and c:
-            meta["pomodoro_log"].setdefault(d, {})[c] = (
-                meta["pomodoro_log"].get(d, {}).get(c, 0) + m)
+    db   = get_db()
+    meta = {"streak_last":None,"streak_count":0,
+            "priorities":{},"weekly_plan":{},"pomodoro_log":{}}
+    sr = db.table("streak").select("*").limit(1).execute().data
+    if sr:
+        meta["streak_last"]  = sr[0].get("last_date")
+        meta["streak_count"] = int(sr[0].get("count",0) or 0)
+    for r in db.table("priorities").select("*").execute().data:
+        meta["priorities"][r["key"]] = r["level"]
+    for r in db.table("weekly_plan").select("*").execute().data:
+        meta["weekly_plan"].setdefault(r["day"],[]).append(r["course"])
+    for r in db.table("pomodoro_log").select("*").execute().data:
+        meta["pomodoro_log"].setdefault(r["date"],{})[r["course"]] = (
+            meta["pomodoro_log"].get(r["date"],{}).get(r["course"],0) + int(r.get("minutes",0) or 0))
     return meta
 
-# ── Save functions (write + clear cache) ───────
+# ── Save functions ─────────────────────────────
 def save_data(data):
-    sheet   = ws("topics")
-    rows    = sheet.get_all_values()
-    lookup  = {(r[0], r[1]): i+2 for i, r in enumerate(rows[1:]) if len(r) >= 2}
-    updates = []
-    for course, topics in data.items():
-        for topic, done in topics.items():
-            key = (course, topic)
-            if key in lookup:
-                updates.append(gspread.Cell(lookup[key], 3, str(done)))
-            else:
-                sheet.append_row([course, topic, str(done)])
-    if updates:
-        sheet.update_cells(updates)
-    fetch_all_data.clear()
+    db = get_db()
+    for c, ts in data.items():
+        for t, d in ts.items():
+            db.table("topics").update({"done": d}).eq("course",c).eq("topic",t).execute()
+    load_data.clear()
 
 def save_events(events):
-    sheet = ws("events")
-    sheet.clear()
-    sheet.append_row(["title","date","type","course","notes"])
+    db = get_db()
+    db.table("events").delete().neq("id",0).execute()
     if events:
-        sheet.append_rows([[e.get("title",""), e.get("date",""),
-                            e.get("type","Other"), e.get("course","General"),
-                            e.get("notes","")] for e in events])
-    fetch_all_data.clear()
+        db.table("events").insert([{"title":e.get("title",""),"date":e.get("date",""),
+            "type":e.get("type","Other"),"course":e.get("course","General"),
+            "notes":e.get("notes","")} for e in events]).execute()
+    load_events.clear()
 
 def save_meta(meta):
-    # Streak
-    s = ws("streak"); s.clear()
-    s.append_row(["last_date","count"])
-    s.append_row([meta.get("streak_last",""), meta.get("streak_count",0)])
-    # Priorities
-    p = ws("priorities"); p.clear()
-    p.append_row(["key","level"])
-    for k, v in meta.get("priorities",{}).items():
-        if v: p.append_row([k, v])
-    # Weekly plan
-    pl = ws("weekly_plan"); pl.clear()
-    pl.append_row(["day","course"])
-    for day, courses in meta.get("weekly_plan",{}).items():
-        for c in courses: pl.append_row([day, c])
-    # Pomodoro log
-    po = ws("pomodoro_log"); po.clear()
-    po.append_row(["date","course","minutes"])
-    for d, courses in meta.get("pomodoro_log",{}).items():
-        for c, mins in courses.items(): po.append_row([d, c, mins])
-    fetch_all_data.clear()
+    db = get_db()
+    db.table("streak").delete().neq("id",0).execute()
+    db.table("streak").insert({"last_date":meta.get("streak_last",""),
+                               "count":meta.get("streak_count",0)}).execute()
+    db.table("priorities").delete().neq("id",0).execute()
+    if meta.get("priorities"):
+        db.table("priorities").insert([{"key":k,"level":v}
+            for k,v in meta["priorities"].items() if v]).execute()
+    db.table("weekly_plan").delete().neq("id",0).execute()
+    if meta.get("weekly_plan"):
+        db.table("weekly_plan").insert([{"day":day,"course":c}
+            for day,cs in meta["weekly_plan"].items() for c in cs]).execute()
+    db.table("pomodoro_log").delete().neq("id",0).execute()
+    if meta.get("pomodoro_log"):
+        db.table("pomodoro_log").insert([{"date":d,"course":c,"minutes":m}
+            for d,cs in meta["pomodoro_log"].items() for c,m in cs.items()]).execute()
+    load_meta.clear()
 
 # ── streak helper ─────────────────────────────
 def update_streak(meta):
