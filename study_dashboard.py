@@ -211,16 +211,16 @@ def save_meta(meta):
         if meta.get("priorities"):
             db_batch_upsert("priorities", [{"key": k, "level": v}
                 for k, v in meta["priorities"].items() if v])
-        # Weekly plan
+        # Weekly plan — delete+insert (day+course combo has no unique key)
         db_delete_all("weekly_plan")
         if meta.get("weekly_plan"):
             db_insert("weekly_plan", [{"day": d, "course": c}
                 for d, cs in meta["weekly_plan"].items() for c in cs])
-        # Pomodoro log
-        db_delete_all("pomodoro_log")
+        # Pomodoro log — use upsert to prevent data loss on network failure
         if meta.get("pomodoro_log"):
-            db_insert("pomodoro_log", [{"date": d, "course": c, "minutes": m}
-                for d, cs in meta["pomodoro_log"].items() for c, m in cs.items()])
+            log_rows = [{"date": d, "course": c, "minutes": m}
+                for d, cs in meta["pomodoro_log"].items() for c, m in cs.items()]
+            db_batch_upsert("pomodoro_log", log_rows)
         load_meta.clear()
         return True
     except Exception as e:
@@ -528,11 +528,13 @@ if page == "📊  Progress":
         st.markdown("</div>", unsafe_allow_html=True)
 
     # ── ACHIEVEMENT BADGES ────────────────────────────────────────
-    streak = meta.get("streak_count", 0)
-    pomo_days = len(meta.get("pomodoro_log", {}))
-    total_mins = sum(sum(v.values()) for v in meta.get("pomodoro_log", {}).values())
+    # Pre-calculate stats once to avoid re-summing on every UI interaction
+    streak        = meta.get("streak_count", 0)
+    pomo_log      = meta.get("pomodoro_log", {})
+    pomo_days     = len(pomo_log)
+    total_mins    = sum(sum(v.values()) for v in pomo_log.values()) if pomo_log else 0
     done_all_badges = sum(sum(1 for s in v.values() if s) for v in data.values())
-    courses_done = sum(1 for c in data.values() if c and all(c.values()))
+    courses_done  = sum(1 for c in data.values() if len(c) > 0 and all(c.values()))
 
     badges = []
     if streak >= 1:   badges.append(("🔥", f"{streak} Day Streak", "#e63946", "#fde8ea"))
@@ -590,12 +592,13 @@ if page == "📊  Progress":
     # Daily goal setter
     with st.expander("⚙️ Set Daily Study Goal"):
         current_goal = int(meta.get("priorities", {}).get("__daily_goal__", 120) or 120)
-        new_goal = st.slider("Daily goal (minutes)", 30, 480, current_goal, 30,
-                             key="daily_goal_slider")
-        if new_goal != current_goal:
-            meta.setdefault("priorities", {})["__daily_goal__"] = new_goal
-            save_meta(meta)
-            st.rerun()
+        with st.form("goal_form"):
+            new_goal = st.slider("Daily goal (minutes)", 30, 480, current_goal, 30)
+            if st.form_submit_button("💾 Save Goal"):
+                meta.setdefault("priorities", {})["__daily_goal__"] = new_goal
+                if save_meta(meta):
+                    st.success("Goal saved!")
+                    st.rerun()
 
     # Stats row
     pct_all = int(done_all/total_all*100) if total_all else 0
