@@ -587,7 +587,7 @@ if page == "📊  Progress":
                                 save_meta(meta)
                                 st.rerun()
                         with tb:
-                            new_prio = st.selectbox("",["","high","medium","low"],
+                            new_prio = st.selectbox("Priority",["","high","medium","low"],
                                                     index=["","high","medium","low"].index(prio),
                                                     key=f"prio_{course}_{lec}",
                                                     label_visibility="collapsed")
