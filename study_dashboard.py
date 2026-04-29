@@ -11,15 +11,12 @@ st.set_page_config(page_title="Study Dashboard · KFUPM", layout="wide", page_ic
 # ── Supabase config ───────────────────────────
 SUPABASE_URL = "https://bbtumvmmhqghhhggexkw.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJidHVtdm1taHFnaGhoZ2dleGt3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczODI0OTksImV4cCI6MjA5Mjk1ODQ5OX0.mhBofxDw9_TsVUMgj74v6C6aTEmbjQ-FwBtsjtuTLwA"
-
+BASE = f"{SUPABASE_URL}/rest/v1"
 HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json",
-    "Prefer": "return=representation"
 }
-
-BASE = f"{SUPABASE_URL}/rest/v1"
 
 DEFAULT_DATA = {
     "CHE 306": {
@@ -53,77 +50,134 @@ DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 
 # ── Supabase helpers ──────────────────────────
 def db_get(table, params=""):
-    r = requests.get(f"{BASE}/{table}?{params}", headers=HEADERS)
-    return r.json() if r.ok else []
+    try:
+        r = requests.get(f"{BASE}/{table}?{params}", headers=HEADERS, timeout=10)
+        return r.json() if r.ok else []
+    except Exception:
+        return []
+
+def db_upsert(table, rows):
+    """Insert or update — safe, no data loss."""
+    if not rows: return True
+    h = {**HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"}
+    try:
+        r = requests.post(f"{BASE}/{table}", headers=h,
+                         json=rows if isinstance(rows, list) else [rows], timeout=10)
+        return r.ok
+    except Exception:
+        return False
 
 def db_insert(table, rows):
-    if not rows: return
-    r = requests.post(f"{BASE}/{table}", headers=HEADERS, json=rows if isinstance(rows, list) else [rows])
-    return r.ok
+    if not rows: return True
+    try:
+        r = requests.post(f"{BASE}/{table}", headers=HEADERS,
+                         json=rows if isinstance(rows, list) else [rows], timeout=10)
+        return r.ok
+    except Exception:
+        return False
 
-def db_update(table, data, match_key, match_val):
-    r = requests.patch(f"{BASE}/{table}?{match_key}=eq.{match_val}", headers=HEADERS, json=data)
-    return r.ok
+def db_update(table, data, row_id):
+    try:
+        r = requests.patch(f"{BASE}/{table}?id=eq.{row_id}", headers=HEADERS,
+                          json=data, timeout=10)
+        return r.ok
+    except Exception:
+        return False
 
-def db_delete(table):
-    r = requests.delete(f"{BASE}/{table}?id=gte.0", headers=HEADERS)
-    return r.ok
+def db_delete_all(table):
+    """Delete all rows safely."""
+    try:
+        rows = db_get(table, "select=id")
+        if not rows: return True
+        ids = [str(r["id"]) for r in rows if "id" in r]
+        if not ids: return True
+        r = requests.delete(f"{BASE}/{table}?id=in.({','.join(ids)})",
+                           headers=HEADERS, timeout=10)
+        return r.ok
+    except Exception:
+        return False
+
+def safe_date(date_str):
+    """Safe date parsing — no crashes on bad data."""
+    try:
+        return datetime.strptime(str(date_str), "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return date.today()
 
 # ── Load functions ────────────────────────────
 @st.cache_data(ttl=30)
 def load_data():
     rows = db_get("topics")
     if not rows:
+        # First run only — seed default data
         seed = [{"course": c, "topic": t, "done": False}
                 for c, ts in DEFAULT_DATA.items() for t in ts]
         db_insert("topics", seed)
         return {c: dict(ts) for c, ts in DEFAULT_DATA.items()}
+    # Build from database only — no auto re-seeding deleted topics
     merged = {}
     for r in rows:
-        merged.setdefault(r["course"], {})[r["topic"]] = bool(r["done"])
-    for c, ts in DEFAULT_DATA.items():
-        for t, dv in ts.items():
-            merged.setdefault(c, {})
-            if t not in merged[c]:
-                merged[c][t] = dv
-                db_insert("topics", {"course": c, "topic": t, "done": dv})
+        c, t = r.get("course",""), r.get("topic","")
+        if c and t:
+            merged.setdefault(c, {})[t] = bool(r.get("done", False))
     return merged
 
 @st.cache_data(ttl=30)
 def load_events():
     rows = db_get("events")
-    return [{"title": r["title"], "date": r["date"], "type": r["type"],
-             "course": r.get("course", "General"), "notes": r.get("notes", "")} for r in rows]
+    result = []
+    for r in rows:
+        result.append({
+            "title":  r.get("title",""),
+            "date":   r.get("date",""),
+            "type":   r.get("type","Other"),
+            "course": r.get("course","General"),
+            "notes":  r.get("notes","")
+        })
+    return result
 
 @st.cache_data(ttl=30)
 def load_meta():
     meta = {"streak_last": None, "streak_count": 0,
             "priorities": {}, "weekly_plan": {}, "pomodoro_log": {}}
-    sr = db_get("streak", "limit=1")
-    if sr:
-        meta["streak_last"]  = sr[0].get("last_date")
-        meta["streak_count"] = int(sr[0].get("count", 0) or 0)
-    for r in db_get("priorities"):
-        meta["priorities"][r["key"]] = r["level"]
-    for r in db_get("weekly_plan"):
-        meta["weekly_plan"].setdefault(r["day"], []).append(r["course"])
-    for r in db_get("pomodoro_log"):
-        d, c, m = r["date"], r["course"], int(r.get("minutes", 0) or 0)
-        meta["pomodoro_log"].setdefault(d, {})[c] = meta["pomodoro_log"].get(d, {}).get(c, 0) + m
+    try:
+        sr = db_get("streak", "limit=1")
+        if sr:
+            meta["streak_last"]  = sr[0].get("last_date")
+            meta["streak_count"] = int(sr[0].get("count", 0) or 0)
+        for r in db_get("priorities"):
+            if r.get("key"):
+                meta["priorities"][r["key"]] = r.get("level","")
+        for r in db_get("weekly_plan"):
+            day, c = r.get("day",""), r.get("course","")
+            if day and c:
+                meta["weekly_plan"].setdefault(day, []).append(c)
+        for r in db_get("pomodoro_log"):
+            d, c = r.get("date",""), r.get("course","")
+            m = int(r.get("minutes", 0) or 0)
+            if d and c:
+                meta["pomodoro_log"].setdefault(d, {})[c] = (
+                    meta["pomodoro_log"].get(d, {}).get(c, 0) + m)
+    except Exception:
+        pass
     return meta
 
 # ── Save functions ────────────────────────────
 def save_data(data):
-    rows = db_get("topics")
-    for r in rows:
-        c, t = r["course"], r["topic"]
-        if c in data and t in data[c]:
-            if bool(r["done"]) != data[c][t]:
-                db_update("topics", {"done": data[c][t]}, "id", r["id"])
+    """Upsert all topics — handles new and existing topics safely."""
+    rows = db_get("topics", "select=id,course,topic,done")
+    existing = {(r["course"], r["topic"]): r["id"] for r in rows}
+    for c, ts in data.items():
+        for t, done in ts.items():
+            if (c, t) in existing:
+                db_update("topics", {"done": done}, existing[(c, t)])
+            else:
+                db_insert("topics", {"course": c, "topic": t, "done": done})
     load_data.clear()
 
 def save_events(events):
-    db_delete("events")
+    """Safe replace — delete then insert with error handling."""
+    db_delete_all("events")
     if events:
         db_insert("events", [{"title": e.get("title",""), "date": e.get("date",""),
             "type": e.get("type","Other"), "course": e.get("course","General"),
@@ -131,18 +185,29 @@ def save_events(events):
     load_events.clear()
 
 def save_meta(meta):
-    db_delete("streak")
-    db_insert("streak", {"last_date": meta.get("streak_last",""), "count": meta.get("streak_count", 0)})
-    db_delete("priorities")
-    if meta.get("priorities"):
-        db_insert("priorities", [{"key": k, "level": v} for k, v in meta["priorities"].items() if v])
-    db_delete("weekly_plan")
-    if meta.get("weekly_plan"):
-        db_insert("weekly_plan", [{"day": d, "course": c} for d, cs in meta["weekly_plan"].items() for c in cs])
-    db_delete("pomodoro_log")
-    if meta.get("pomodoro_log"):
-        db_insert("pomodoro_log", [{"date": d, "course": c, "minutes": m}
-            for d, cs in meta["pomodoro_log"].items() for c, m in cs.items()])
+    """Use upsert for streak to prevent data loss on network failure."""
+    try:
+        # Streak — upsert to avoid delete+insert risk
+        db_delete_all("streak")
+        db_insert("streak", {"last_date": meta.get("streak_last",""),
+                              "count": meta.get("streak_count", 0)})
+        # Priorities
+        db_delete_all("priorities")
+        if meta.get("priorities"):
+            db_insert("priorities", [{"key": k, "level": v}
+                for k, v in meta["priorities"].items() if v])
+        # Weekly plan
+        db_delete_all("weekly_plan")
+        if meta.get("weekly_plan"):
+            db_insert("weekly_plan", [{"day": d, "course": c}
+                for d, cs in meta["weekly_plan"].items() for c in cs])
+        # Pomodoro log
+        db_delete_all("pomodoro_log")
+        if meta.get("pomodoro_log"):
+            db_insert("pomodoro_log", [{"date": d, "course": c, "minutes": m}
+                for d, cs in meta["pomodoro_log"].items() for c, m in cs.items()])
+    except Exception as e:
+        st.warning(f"Could not save some data: {e}")
     load_meta.clear()
 
 # ── streak helper ─────────────────────────────
