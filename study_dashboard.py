@@ -11,8 +11,7 @@ from google.oauth2.service_account import Credentials
 st.set_page_config(page_title="Study Dashboard · KFUPM", layout="wide", page_icon="◈")
 
 # ── Google Sheets config ──────────────────────
-SHEET_ID   = "1aAoWHwD9t4UvChV6y2cyGjAGXI3jgFTXWISII67UBM4"
-CREDS_FILE = Path(__file__).parent / "service_account.json"
+SHEET_ID = "1aAoWHwD9t4UvChV6y2cyGjAGXI3jgFTXWISII67UBM4"
 
 SCOPES = [
     "https://spreadsheets.google.com/feeds",
@@ -21,8 +20,10 @@ SCOPES = [
 
 @st.cache_resource
 def get_sheet():
-    creds = Credentials.from_service_account_file(str(CREDS_FILE), scopes=SCOPES)
-    gc    = gspread.authorize(creds)
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"], scopes=SCOPES
+    )
+    gc = gspread.authorize(creds)
     return gc.open_by_key(SHEET_ID)
 
 def ws(name):
