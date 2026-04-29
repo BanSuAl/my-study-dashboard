@@ -25,6 +25,17 @@ def get_gc():
     )
     return gspread.authorize(creds)
 
+@st.cache_data(ttl=30)
+def cached_sheet_data(sheet_name):
+    """Cache sheet reads for 30 seconds to avoid API rate limits."""
+    try:
+        rows = ws(sheet_name).get_all_values()
+        if len(rows) < 1:
+            return []
+        return rows
+    except Exception:
+        return []
+
 def get_sheet():
     return get_gc().open_by_key(SHEET_ID)
 
@@ -115,6 +126,7 @@ def load_data():
 
 def save_data(data):
     """Write all topic done-states back to Google Sheets."""
+    cached_sheet_data.clear()
     sheet = ws("topics")
     rows  = sheet.get_all_records()
     # Build lookup: (course, topic) -> row number (1-indexed, +1 for header)
@@ -133,7 +145,7 @@ def save_data(data):
 
 def load_events():
     """Load calendar events from Google Sheets."""
-    rows = ws("events").get_all_records()
+    rows = safe_get_records("events")
     return [{"title": r["title"], "date": r["date"],
              "type": r["type"],
              "course": r.get("course","General"),
@@ -141,6 +153,7 @@ def load_events():
 
 def save_events(events):
     """Overwrite events sheet."""
+    cached_sheet_data.clear()
     sheet = ws("events")
     sheet.clear()
     sheet.append_row(["title","date","type","course","notes"])
@@ -152,7 +165,7 @@ def save_events(events):
 def safe_get_records(sheet_name):
     """Get all records safely — returns [] if sheet is empty or has no headers."""
     try:
-        rows = ws(sheet_name).get_all_values()
+        rows = cached_sheet_data(sheet_name)
         if len(rows) < 2:
             return []
         headers = rows[0]
@@ -200,6 +213,7 @@ def load_meta():
 
 def save_meta(meta):
     """Write meta back to sheets."""
+    cached_sheet_data.clear()
     # Streak
     streak_ws = ws("streak")
     streak_ws.clear()
