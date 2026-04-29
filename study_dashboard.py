@@ -1,23 +1,25 @@
 import streamlit as st
-import json, os, calendar, base64
+import json, os, calendar
 import pandas as pd
 import plotly.graph_objects as go
-import requests
 from datetime import datetime, date, timedelta
 from pathlib import Path
+import requests
 
 st.set_page_config(page_title="Study Dashboard · KFUPM", layout="wide", page_icon="◈")
 
-# ── GitHub config ─────────────────────────────
-GITHUB_REPO = st.secrets["GITHUB_REPO"]
-DATA_FILE   = "data.json"
+# ── Supabase config ───────────────────────────
+SUPABASE_URL = "https://bbtumvmmhqghhhggexkw.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJidHVtdm1taHFnaGhoZ2dleGt3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczODI0OTksImV4cCI6MjA5Mjk1ODQ5OX0.mhBofxDw9_TsVUMgj74v6C6aTEmbjQ-FwBtsjtuTLwA"
 
-def get_headers():
-    token = st.secrets["GITHUB_TOKEN"]
-    return {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json"
-    }
+HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=representation"
+}
+
+BASE = f"{SUPABASE_URL}/rest/v1"
 
 DEFAULT_DATA = {
     "CHE 306": {
@@ -46,101 +48,102 @@ DEFAULT_DATA = {
     }
 }
 
-DEFAULT_JSON = {
-    "courses": DEFAULT_DATA,
-    "events": [],
-    "streak_last": None,
-    "streak_count": 0,
-    "priorities": {},
-    "weekly_plan": {},
-    "pomodoro_log": {}
-}
-
 COURSE_COLORS = ["#4361ee","#e63946","#7209b7","#2d6a4f","#e76f51","#0077b6"]
 DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 
-# ── GitHub read/write ─────────────────────────
-def github_read():
-    """Read data.json from GitHub."""
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DATA_FILE}"
-    r = requests.get(url, headers=get_headers())
-    if r.status_code == 404:
-        return DEFAULT_JSON.copy(), None
-    if not r.ok:
-        st.error(f"GitHub Read Error {r.status_code}: {r.text[:200]}")
-        return DEFAULT_JSON.copy(), None
-    data = r.json()
-    content = base64.b64decode(data["content"]).decode("utf-8")
-    return json.loads(content), data["sha"]
+# ── Supabase helpers ──────────────────────────
+def db_get(table, params=""):
+    r = requests.get(f"{BASE}/{table}?{params}", headers=HEADERS)
+    return r.json() if r.ok else []
 
-def github_write(obj, sha=None):
-    """Write data.json to GitHub."""
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DATA_FILE}"
-    content = base64.b64encode(json.dumps(obj, indent=2).encode()).decode()
-    body = {"message": "update data", "content": content}
-    if sha:
-        body["sha"] = sha
-    r = requests.put(url, headers=get_headers(), json=body)
-    if not r.ok:
-        st.error(f"GitHub Write Error {r.status_code}: {r.text[:200]}")
-        return
-    return r
+def db_insert(table, rows):
+    if not rows: return
+    r = requests.post(f"{BASE}/{table}", headers=HEADERS, json=rows if isinstance(rows, list) else [rows])
+    return r.ok
 
-# ── Cache all data in session state ───────────
-def get_all():
-    if "db" not in st.session_state:
-        db, sha = github_read()
-        # Merge default courses
-        for c, topics in DEFAULT_DATA.items():
-            db["courses"].setdefault(c, {})
-            for t, v in topics.items():
-                db["courses"][c].setdefault(t, v)
-        st.session_state.db  = db
-        st.session_state.sha = sha
-    return st.session_state.db
+def db_update(table, data, match_key, match_val):
+    r = requests.patch(f"{BASE}/{table}?{match_key}=eq.{match_val}", headers=HEADERS, json=data)
+    return r.ok
 
-def save_all():
-    """Save everything back to GitHub."""
-    db  = st.session_state.db
-    sha = st.session_state.get("sha")
-    github_write(db, sha)
-    # refresh sha
-    _, new_sha = github_read()
-    st.session_state.sha = new_sha
+def db_delete(table):
+    r = requests.delete(f"{BASE}/{table}?id=gte.0", headers=HEADERS)
+    return r.ok
 
-# ── Load/save wrappers (same API as before) ───
+# ── Load functions ────────────────────────────
+@st.cache_data(ttl=30)
 def load_data():
-    return get_all()["courses"]
+    rows = db_get("topics")
+    if not rows:
+        seed = [{"course": c, "topic": t, "done": False}
+                for c, ts in DEFAULT_DATA.items() for t in ts]
+        db_insert("topics", seed)
+        return {c: dict(ts) for c, ts in DEFAULT_DATA.items()}
+    merged = {}
+    for r in rows:
+        merged.setdefault(r["course"], {})[r["topic"]] = bool(r["done"])
+    for c, ts in DEFAULT_DATA.items():
+        for t, dv in ts.items():
+            merged.setdefault(c, {})
+            if t not in merged[c]:
+                merged[c][t] = dv
+                db_insert("topics", {"course": c, "topic": t, "done": dv})
+    return merged
 
+@st.cache_data(ttl=30)
 def load_events():
-    return get_all().get("events", [])
+    rows = db_get("events")
+    return [{"title": r["title"], "date": r["date"], "type": r["type"],
+             "course": r.get("course", "General"), "notes": r.get("notes", "")} for r in rows]
 
+@st.cache_data(ttl=30)
 def load_meta():
-    db = get_all()
-    return {
-        "streak_last":  db.get("streak_last"),
-        "streak_count": db.get("streak_count", 0),
-        "priorities":   db.get("priorities", {}),
-        "weekly_plan":  db.get("weekly_plan", {}),
-        "pomodoro_log": db.get("pomodoro_log", {}),
-    }
+    meta = {"streak_last": None, "streak_count": 0,
+            "priorities": {}, "weekly_plan": {}, "pomodoro_log": {}}
+    sr = db_get("streak", "limit=1")
+    if sr:
+        meta["streak_last"]  = sr[0].get("last_date")
+        meta["streak_count"] = int(sr[0].get("count", 0) or 0)
+    for r in db_get("priorities"):
+        meta["priorities"][r["key"]] = r["level"]
+    for r in db_get("weekly_plan"):
+        meta["weekly_plan"].setdefault(r["day"], []).append(r["course"])
+    for r in db_get("pomodoro_log"):
+        d, c, m = r["date"], r["course"], int(r.get("minutes", 0) or 0)
+        meta["pomodoro_log"].setdefault(d, {})[c] = meta["pomodoro_log"].get(d, {}).get(c, 0) + m
+    return meta
 
+# ── Save functions ────────────────────────────
 def save_data(data):
-    st.session_state.db["courses"] = data
-    save_all()
+    rows = db_get("topics")
+    for r in rows:
+        c, t = r["course"], r["topic"]
+        if c in data and t in data[c]:
+            if bool(r["done"]) != data[c][t]:
+                db_update("topics", {"done": data[c][t]}, "id", r["id"])
+    load_data.clear()
 
 def save_events(events):
-    st.session_state.db["events"] = events
-    save_all()
+    db_delete("events")
+    if events:
+        db_insert("events", [{"title": e.get("title",""), "date": e.get("date",""),
+            "type": e.get("type","Other"), "course": e.get("course","General"),
+            "notes": e.get("notes","")} for e in events])
+    load_events.clear()
 
 def save_meta(meta):
-    db = st.session_state.db
-    db["streak_last"]  = meta.get("streak_last")
-    db["streak_count"] = meta.get("streak_count", 0)
-    db["priorities"]   = meta.get("priorities", {})
-    db["weekly_plan"]  = meta.get("weekly_plan", {})
-    db["pomodoro_log"] = meta.get("pomodoro_log", {})
-    save_all()
+    db_delete("streak")
+    db_insert("streak", {"last_date": meta.get("streak_last",""), "count": meta.get("streak_count", 0)})
+    db_delete("priorities")
+    if meta.get("priorities"):
+        db_insert("priorities", [{"key": k, "level": v} for k, v in meta["priorities"].items() if v])
+    db_delete("weekly_plan")
+    if meta.get("weekly_plan"):
+        db_insert("weekly_plan", [{"day": d, "course": c} for d, cs in meta["weekly_plan"].items() for c in cs])
+    db_delete("pomodoro_log")
+    if meta.get("pomodoro_log"):
+        db_insert("pomodoro_log", [{"date": d, "course": c, "minutes": m}
+            for d, cs in meta["pomodoro_log"].items() for c, m in cs.items()])
+    load_meta.clear()
 
 # ── streak helper ─────────────────────────────
 def update_streak(meta):
