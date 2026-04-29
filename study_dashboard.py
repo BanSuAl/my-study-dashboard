@@ -470,6 +470,106 @@ if page == "📊  Progress":
 
     heading("Study Progress", f"Spring 2026 — {len(data)} courses tracked")
 
+    # ── EXAM DATES TABLE ──────────────────────────────────────────
+    exam_events = sorted(
+        [e for e in events if e.get("type") == "Exam" and safe_date(e["date"]) >= today],
+        key=lambda x: x["date"]
+    )
+    if exam_events:
+        st.markdown(f"""
+        <div style="background:{WHITE};border:1.5px solid {BORDER};border-radius:14px;
+                    padding:1.2rem 1.4rem;margin-bottom:1.5rem;">
+            <div style="font-family:'Playfair Display',serif;font-size:1.1rem;
+                        font-weight:800;color:{TEXT};margin-bottom:1rem;">📋 Upcoming Exams</div>
+        """, unsafe_allow_html=True)
+        for e in exam_events:
+            ex_date = safe_date(e["date"])
+            diff = (ex_date - today).days
+            if diff == 0:
+                badge_color = "#e63946"; badge_bg = "#fde8ea"; badge_txt = "TODAY 🚨"
+            elif diff <= 3:
+                badge_color = "#e63946"; badge_bg = "#fde8ea"; badge_txt = f"{diff}d left 🔴"
+            elif diff <= 7:
+                badge_color = "#e76f51"; badge_bg = "#fdeee9"; badge_txt = f"{diff}d left 🟠"
+            else:
+                badge_color = "#2d6a4f"; badge_bg = "#d8f3dc"; badge_txt = f"{diff}d left 🟢"
+            st.markdown(f"""
+            <div style="display:flex;justify-content:space-between;align-items:center;
+                        padding:.6rem .8rem;margin-bottom:.4rem;background:{SURF};
+                        border-radius:8px;border-left:3px solid {badge_color};">
+                <div>
+                    <div style="font-weight:700;font-size:.9rem;color:{TEXT};">{e['title']}</div>
+                    <div style="font-size:.75rem;color:{TEXTD};margin-top:2px;">
+                        {e.get('course','General')} · {ex_date.strftime('%A, %b %d %Y')}
+                    </div>
+                </div>
+                <div style="background:{badge_bg};color:{badge_color};font-family:'DM Mono',monospace;
+                            font-size:.75rem;font-weight:700;padding:4px 10px;border-radius:6px;
+                            white-space:nowrap;">{badge_txt}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── ACHIEVEMENT BADGES ────────────────────────────────────────
+    streak = meta.get("streak_count", 0)
+    pomo_days = len(meta.get("pomodoro_log", {}))
+    total_mins = sum(sum(v.values()) for v in meta.get("pomodoro_log", {}).values())
+    done_all_badges = sum(sum(1 for s in v.values() if s) for v in data.values())
+    courses_done = sum(1 for c in data.values() if all(c.values()) and len(c) > 0)
+
+    badges = []
+    if streak >= 1:   badges.append(("🔥", f"{streak} Day Streak", "#e63946", "#fde8ea"))
+    if streak >= 7:   badges.append(("🏆", "Week Warrior", "#e76f51", "#fdeee9"))
+    if streak >= 30:  badges.append(("👑", "Month Master", "#7209b7", "#f0e6ff"))
+    if done_all_badges >= 10: badges.append(("✅", "10 Topics Done", "#2d6a4f", "#d8f3dc"))
+    if done_all_badges >= 25: badges.append(("🎯", "25 Topics Done", "#0077b6", "#e0f0ff"))
+    if total_mins >= 60:  badges.append(("⏱️", "1hr Studied", "#4361ee", "#eef0ff"))
+    if total_mins >= 300: badges.append(("💪", "5hrs Studied", "#7209b7", "#f0e6ff"))
+    if courses_done >= 1: badges.append(("🎓", "Course Complete!", "#2d6a4f", "#d8f3dc"))
+    if pomo_days >= 3:    badges.append(("📅", "3-Day Grind", "#e76f51", "#fdeee9"))
+
+    if badges:
+        badge_html = "".join([
+            f'<div style="display:inline-flex;align-items:center;gap:6px;background:{bg};'
+            f'color:{clr};border-radius:20px;padding:5px 12px;margin:3px;font-size:.78rem;font-weight:600;">'
+            f'{icon} {label}</div>'
+            for icon, label, clr, bg in badges
+        ])
+        st.markdown(f"""
+        <div style="background:{WHITE};border:1.5px solid {BORDER};border-radius:14px;
+                    padding:1rem 1.4rem;margin-bottom:1.5rem;">
+            <div style="font-family:'Playfair Display',serif;font-size:1.1rem;
+                        font-weight:800;color:{TEXT};margin-bottom:.8rem;">🏅 Achievements</div>
+            <div style="display:flex;flex-wrap:wrap;gap:4px;">{badge_html}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── DAILY STUDY GOAL ─────────────────────────────────────────
+    today_str = str(today)
+    today_mins = sum(meta.get("pomodoro_log", {}).get(today_str, {}).values())
+    goal_mins = 120  # 2 hours default daily goal
+    goal_pct  = min(100, int(today_mins / goal_mins * 100))
+    goal_clr  = "#e63946" if goal_pct < 33 else ("#e76f51" if goal_pct < 66 else "#2d6a4f")
+    goal_emoji = "🔴" if goal_pct < 33 else ("🟠" if goal_pct < 66 else "🟢")
+    st.markdown(f"""
+    <div style="background:{WHITE};border:1.5px solid {BORDER};border-radius:14px;
+                padding:1rem 1.4rem;margin-bottom:1.5rem;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;">
+            <div style="font-family:'Playfair Display',serif;font-size:1.1rem;
+                        font-weight:800;color:{TEXT};">⏰ Daily Study Goal {goal_emoji}</div>
+            <div style="font-family:'DM Mono',monospace;font-size:.85rem;color:{goal_clr};font-weight:700;">
+                {today_mins}min / {goal_mins}min</div>
+        </div>
+        <div style="background:{SURF2};border-radius:99px;height:8px;overflow:hidden;">
+            <div style="background:{goal_clr};width:{goal_pct}%;height:100%;
+                        border-radius:99px;transition:width .3s;"></div>
+        </div>
+        <div style="font-size:.74rem;color:{TEXTD};margin-top:.4rem;">
+            {"🎉 Goal reached! Great work today!" if goal_pct >= 100
+             else f"{goal_mins - today_mins} min remaining to reach your daily goal"}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
     # Stats row
     pct_all = int(done_all/total_all*100) if total_all else 0
     s1,s2,s3,s4 = st.columns(4)
