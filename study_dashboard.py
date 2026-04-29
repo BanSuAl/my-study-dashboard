@@ -174,17 +174,26 @@ def load_meta():
     return meta
 
 # ── Save functions ────────────────────────────
-def save_data(data):
-    """Upsert all topics — handles new and existing topics safely."""
+def save_data(data, changed_only=None):
+    """Save topics — if changed_only dict provided, only saves those."""
     try:
-        rows = db_get("topics", "select=id,course,topic,done")
+        # Only fetch and update what changed for speed
+        target = changed_only if changed_only else data
+        rows = db_get("topics", "select=id,course,topic")
         existing = {(r["course"], r["topic"]): r["id"] for r in rows}
-        for c, ts in data.items():
+        updates = []
+        inserts = []
+        for c, ts in target.items():
             for t, done in ts.items():
                 if (c, t) in existing:
-                    db_update("topics", {"done": done}, existing[(c, t)])
+                    updates.append((existing[(c,t)], done))
                 else:
-                    db_insert("topics", {"course": c, "topic": t, "done": done})
+                    inserts.append({"course": c, "topic": t, "done": done})
+        # Batch updates
+        for row_id, done in updates:
+            db_update("topics", {"done": done}, row_id)
+        if inserts:
+            db_insert("topics", inserts)
         load_data.clear()
         return True
     except Exception as e:
@@ -682,6 +691,8 @@ if page == "📊  Progress":
                 </div>""", unsafe_allow_html=True)
 
                 with st.expander(f"Topics — {course}"):
+                    changed = False
+                    prio_changed = False
                     for lec, is_done in lectures.items():
                         prio_key = f"{course}::{lec}"
                         prio = meta.get("priorities",{}).get(prio_key,"")
@@ -692,10 +703,7 @@ if page == "📊  Progress":
                                 value=is_done, key=f"chk_{course}_{lec}")
                             if checked != is_done:
                                 data[course][lec] = checked
-                                save_data(data)
-                                meta = update_streak(meta)
-                                save_meta(meta)
-                                st.rerun()
+                                changed = True
                         with tb:
                             new_prio = st.selectbox("Priority",["","high","medium","low"],
                                                     index=["","high","medium","low"].index(prio),
@@ -703,8 +711,16 @@ if page == "📊  Progress":
                                                     label_visibility="collapsed")
                             if new_prio != prio:
                                 meta.setdefault("priorities",{})[prio_key] = new_prio
-                                save_meta(meta)
-                                st.rerun()
+                                prio_changed = True
+                    # Save ONCE after all checkboxes processed
+                    if changed:
+                        save_data(data)
+                        meta = update_streak(meta)
+                        save_meta(meta)
+                        st.rerun()
+                    elif prio_changed:
+                        save_meta(meta)
+                        st.rerun()
         st.markdown("<div style='height:.4rem'></div>", unsafe_allow_html=True)
 
 
