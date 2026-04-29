@@ -495,7 +495,7 @@ if page == "📊  Progress":
                 badge_color = "#2d6a4f"; badge_bg = "#d8f3dc"; badge_txt = f"{diff}d left 🟢"
             st.markdown(f"""
             <div style="display:flex;justify-content:space-between;align-items:center;
-                        padding:.6rem .8rem;margin-bottom:.4rem;background:{SURF};
+                        padding:.6rem .8rem;margin-bottom:.4rem;background:{SURF2};
                         border-radius:8px;border-left:3px solid {badge_color};">
                 <div>
                     <div style="font-weight:700;font-size:.9rem;color:{TEXT};">{e['title']}</div>
