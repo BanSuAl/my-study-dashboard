@@ -4,16 +4,31 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
 from pathlib import Path
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ── page config ──────────────────────────────
 st.set_page_config(page_title="Study Dashboard · KFUPM", layout="wide", page_icon="◈")
 
-# ── file paths ───────────────────────────────
-BASE        = Path(__file__).parent
-DATA_FILE   = BASE / "study_data.json"
-EVENTS_FILE = BASE / "events_data.json"
-META_FILE   = BASE / "meta_data.json"       # streak, priorities, weekly plan, pomodoro log
+# ── Google Sheets config ──────────────────────
+SHEET_ID   = "1aAoWHwD9t4UvChV6y2cyGjAGXI3jgFTXWISII67UBM4"
+CREDS_FILE = Path(__file__).parent / "service_account.json"
 
+SCOPES = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive"
+]
+
+@st.cache_resource
+def get_sheet():
+    creds = Credentials.from_service_account_file(str(CREDS_FILE), scopes=SCOPES)
+    gc    = gspread.authorize(creds)
+    return gc.open_by_key(SHEET_ID)
+
+def ws(name):
+    return get_sheet().worksheet(name)
+
+# ── default course data ───────────────────────
 DEFAULT_DATA = {
     "CHE 306": {
         "Ch5 L1": False, "Ch7 L2": False, "Ch7 L3": False, "Ch7 L4": False,
@@ -44,39 +59,145 @@ DEFAULT_DATA = {
 COURSE_COLORS = ["#4361ee","#e63946","#7209b7","#2d6a4f","#e76f51","#0077b6"]
 DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 
-# ── persistence ──────────────────────────────
-def load_json(path, default):
-    if path.exists():
-        with open(path) as f: return json.load(f)
-    return default
-
-def save_json(path, obj):
-    with open(path, "w") as f: json.dump(obj, f, indent=2)
+# ══════════════════════════════════════════════
+#  GOOGLE SHEETS — READ / WRITE FUNCTIONS
+# ══════════════════════════════════════════════
 
 def load_data():
-    saved = load_json(DATA_FILE, {})
-    # Start from DEFAULT_DATA structure, then overlay saved progress
-    merged = {}
-    for course, topics in DEFAULT_DATA.items():
-        merged[course] = {}
-        for topic, default_val in topics.items():
-            merged[course][topic] = saved.get(course, {}).get(topic, default_val)
-    # Also keep any courses the user added manually (not in DEFAULT_DATA)
-    for course, topics in saved.items():
-        if course not in merged:
-            merged[course] = topics
-    return merged
-def load_events(): return load_json(EVENTS_FILE, [])
-def load_meta():   return load_json(META_FILE,   {
-    "streak_last": None, "streak_count": 0,
-    "priorities": {},    # {"COURSE::topic": "high"/"medium"/"low"}
-    "weekly_plan": {},   # {"Monday": ["CHE 306", ...]}
-    "pomodoro_log": {}   # {"YYYY-MM-DD": {"CHE 306": minutes}}
-})
+    """Load topics from Google Sheets. Seeds default data on first run."""
+    sheet  = ws("topics")
+    rows   = sheet.get_all_records()   # [{"course":…, "topic":…, "done":…}, …]
 
-def save_data(d):   save_json(DATA_FILE,   d)
-def save_events(e): save_json(EVENTS_FILE, e)
-def save_meta(m):   save_json(META_FILE,   m)
+    if not rows:
+        # First run — seed with default data
+        seed = []
+        for course, topics in DEFAULT_DATA.items():
+            for topic, done in topics.items():
+                seed.append([course, topic, str(done)])
+        sheet.append_rows(seed, value_input_option="RAW")
+        return {c: dict(t) for c, t in
+                [(c, {r["topic"]: False for r in DEFAULT_DATA[c]}) for c in DEFAULT_DATA]}
+
+    merged = {}
+    for row in rows:
+        course = row["course"]
+        topic  = row["topic"]
+        done   = str(row.get("done","FALSE")).upper() in ("TRUE","1","YES")
+        merged.setdefault(course, {})[topic] = done
+
+    # Add any missing default topics (code update won't lose them)
+    for course, topics in DEFAULT_DATA.items():
+        for topic, default_val in topics.items():
+            if course not in merged:
+                merged[course] = {}
+            if topic not in merged[course]:
+                merged[course][topic] = default_val
+                ws("topics").append_row([course, topic, str(default_val)])
+    return merged
+
+def save_data(data):
+    """Write all topic done-states back to Google Sheets."""
+    sheet = ws("topics")
+    rows  = sheet.get_all_records()
+    # Build lookup: (course, topic) -> row number (1-indexed, +1 for header)
+    lookup = {(r["course"], r["topic"]): i+2 for i, r in enumerate(rows)}
+    updates = []
+    for course, topics in data.items():
+        for topic, done in topics.items():
+            key = (course, topic)
+            if key in lookup:
+                row_num = lookup[key]
+                updates.append(gspread.Cell(row_num, 3, str(done)))
+            else:
+                sheet.append_row([course, topic, str(done)])
+    if updates:
+        sheet.update_cells(updates)
+
+def load_events():
+    """Load calendar events from Google Sheets."""
+    rows = ws("events").get_all_records()
+    return [{"title": r["title"], "date": r["date"],
+             "type": r["type"],
+             "course": r.get("course","General"),
+             "notes": r.get("notes","")} for r in rows]
+
+def save_events(events):
+    """Overwrite events sheet."""
+    sheet = ws("events")
+    sheet.clear()
+    sheet.append_row(["title","date","type","course","notes"])
+    if events:
+        sheet.append_rows([[e.get("title",""), e.get("date",""),
+                            e.get("type","Other"), e.get("course","General"),
+                            e.get("notes","")] for e in events])
+
+def load_meta():
+    """Load streak, priorities, weekly_plan, pomodoro_log from sheets."""
+    meta = {
+        "streak_last": None, "streak_count": 0,
+        "priorities": {}, "weekly_plan": {}, "pomodoro_log": {}
+    }
+    # Streak
+    streak_rows = ws("streak").get_all_records()
+    if streak_rows:
+        r = streak_rows[0]
+        meta["streak_last"]  = r.get("last_date") or None
+        meta["streak_count"] = int(r.get("count", 0) or 0)
+
+    # Priorities
+    for r in ws("priorities").get_all_records():
+        if r.get("key"):
+            meta["priorities"][r["key"]] = r.get("level","")
+
+    # Weekly plan
+    for r in ws("weekly_plan").get_all_records():
+        day = r.get("day","")
+        c   = r.get("course","")
+        if day and c:
+            meta["weekly_plan"].setdefault(day, []).append(c)
+
+    # Pomodoro log
+    for r in ws("pomodoro_log").get_all_records():
+        d  = r.get("date","")
+        c  = r.get("course","")
+        m  = int(r.get("minutes", 0) or 0)
+        if d and c:
+            meta["pomodoro_log"].setdefault(d, {})[c] = (
+                meta["pomodoro_log"].get(d, {}).get(c, 0) + m
+            )
+    return meta
+
+def save_meta(meta):
+    """Write meta back to sheets."""
+    # Streak
+    streak_ws = ws("streak")
+    streak_ws.clear()
+    streak_ws.append_row(["last_date","count"])
+    streak_ws.append_row([meta.get("streak_last",""), meta.get("streak_count",0)])
+
+    # Priorities
+    prio_ws = ws("priorities")
+    prio_ws.clear()
+    prio_ws.append_row(["key","level"])
+    for k, v in meta.get("priorities",{}).items():
+        if v:
+            prio_ws.append_row([k, v])
+
+    # Weekly plan
+    plan_ws = ws("weekly_plan")
+    plan_ws.clear()
+    plan_ws.append_row(["day","course"])
+    for day, courses in meta.get("weekly_plan",{}).items():
+        for c in courses:
+            plan_ws.append_row([day, c])
+
+    # Pomodoro log
+    pomo_ws = ws("pomodoro_log")
+    pomo_ws.clear()
+    pomo_ws.append_row(["date","course","minutes"])
+    for d, courses in meta.get("pomodoro_log",{}).items():
+        for c, mins in courses.items():
+            pomo_ws.append_row([d, c, mins])
 
 # ── streak helper ─────────────────────────────
 def update_streak(meta):
