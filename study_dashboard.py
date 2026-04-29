@@ -12,50 +12,8 @@ st.set_page_config(page_title="Study Dashboard · KFUPM", layout="wide", page_ic
 
 # ── Google Sheets config ──────────────────────
 SHEET_ID = "1aAoWHwD9t4UvChV6y2cyGjAGXI3jgFTXWISII67UBM4"
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
-
-@st.cache_resource
-def get_gc():
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"], scopes=SCOPES
-    )
-    return gspread.authorize(creds)
-
-@st.cache_data(ttl=30)
-def cached_sheet_data(sheet_name):
-    """Cache sheet reads for 30 seconds to avoid API rate limits."""
-    try:
-        rows = ws(sheet_name).get_all_values()
-        if len(rows) < 1:
-            return []
-        return rows
-    except Exception:
-        return []
-
-def get_sheet():
-    return get_gc().open_by_key(SHEET_ID)
-
-def ws(name):
-    try:
-        return get_sheet().worksheet(name)
-    except gspread.exceptions.WorksheetNotFound:
-        sh = get_sheet()
-        headers = {
-            "topics":       ["course","topic","done"],
-            "events":       ["title","date","type","course","notes"],
-            "weekly_plan":  ["day","course"],
-            "pomodoro_log": ["date","course","minutes"],
-            "priorities":   ["key","level"],
-            "streak":       ["last_date","count"],
-        }
-        sheet = sh.add_worksheet(title=name, rows=1000, cols=10)
-        if name in headers:
-            sheet.append_row(headers[name])
-        return sheet
+SCOPES   = ["https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"]
 
 # ── default course data ───────────────────────
 DEFAULT_DATA = {
@@ -89,71 +47,152 @@ COURSE_COLORS = ["#4361ee","#e63946","#7209b7","#2d6a4f","#e76f51","#0077b6"]
 DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 
 # ══════════════════════════════════════════════
-#  GOOGLE SHEETS — READ / WRITE FUNCTIONS
+#  GOOGLE SHEETS — SINGLE CONNECTION + BATCH READ
 # ══════════════════════════════════════════════
 
+@st.cache_resource
+def get_gc():
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"], scopes=SCOPES)
+    return gspread.authorize(creds)
+
+@st.cache_resource
+def get_spreadsheet():
+    return get_gc().open_by_key(SHEET_ID)
+
+def ws(name):
+    sh = get_spreadsheet()
+    try:
+        return sh.worksheet(name)
+    except gspread.exceptions.WorksheetNotFound:
+        headers = {
+            "topics":       ["course","topic","done"],
+            "events":       ["title","date","type","course","notes"],
+            "weekly_plan":  ["day","course"],
+            "pomodoro_log": ["date","course","minutes"],
+            "priorities":   ["key","level"],
+            "streak":       ["last_date","count"],
+        }
+        sheet = sh.add_worksheet(title=name, rows=1000, cols=10)
+        if name in headers:
+            sheet.append_row(headers[name])
+        return sheet
+
+# ── Read all sheets in ONE batch call ──────────
+@st.cache_data(ttl=60)
+def fetch_all_data():
+    """Read ALL sheets in a single API call. Cached for 60 seconds."""
+    try:
+        sh  = get_spreadsheet()
+        all_sheets = sh.fetch_sheet_metadata()
+        result = {}
+        for s in all_sheets.get("sheets", []):
+            title = s["properties"]["title"]
+            result[title] = sh.worksheet(title).get_all_values()
+        return result
+    except Exception as e:
+        return {}
+
+def parse_sheet(raw, sheet_name):
+    """Convert raw rows to list of dicts."""
+    if not raw or len(raw) < 2:
+        return []
+    headers = raw[0]
+    if not any(headers):
+        return []
+    return [dict(zip(headers, row)) for row in raw[1:] if any(row)]
+
+# ── Load functions (use cache) ─────────────────
 def load_data():
-    """Load topics from Google Sheets. Seeds default data on first run."""
-    sheet = ws("topics")
-    rows  = safe_get_records("topics")
+    raw  = fetch_all_data()
+    rows = parse_sheet(raw.get("topics", []), "topics")
 
     if not rows:
-        # First run — seed with default data
-        seed = []
+        # First run — seed default data
+        sheet = ws("topics")
+        seed  = []
         for course, topics in DEFAULT_DATA.items():
             for topic, done in topics.items():
                 seed.append([course, topic, str(done)])
         sheet.append_rows(seed, value_input_option="RAW")
-        return {course: {topic: done for topic, done in topics.items()}
-                for course, topics in DEFAULT_DATA.items()}
+        fetch_all_data.clear()
+        return {c: dict(t) for c, t in DEFAULT_DATA.items()}
 
     merged = {}
     for row in rows:
-        course = row["course"]
-        topic  = row["topic"]
+        course = row.get("course","")
+        topic  = row.get("topic","")
         done   = str(row.get("done","FALSE")).upper() in ("TRUE","1","YES")
-        merged.setdefault(course, {})[topic] = done
+        if course and topic:
+            merged.setdefault(course, {})[topic] = done
 
-    # Add any missing default topics (code update won't lose them)
+    # Add any missing default topics
+    new_rows = []
     for course, topics in DEFAULT_DATA.items():
         for topic, default_val in topics.items():
             if course not in merged:
                 merged[course] = {}
             if topic not in merged[course]:
                 merged[course][topic] = default_val
-                ws("topics").append_row([course, topic, str(default_val)])
+                new_rows.append([course, topic, str(default_val)])
+    if new_rows:
+        ws("topics").append_rows(new_rows)
+        fetch_all_data.clear()
     return merged
 
+def load_events():
+    raw  = fetch_all_data()
+    rows = parse_sheet(raw.get("events", []), "events")
+    return [{"title": r.get("title",""), "date": r.get("date",""),
+             "type":  r.get("type","Other"),
+             "course": r.get("course","General"),
+             "notes": r.get("notes","")} for r in rows]
+
+def load_meta():
+    raw  = fetch_all_data()
+    meta = {"streak_last": None, "streak_count": 0,
+            "priorities": {}, "weekly_plan": {}, "pomodoro_log": {}}
+
+    for r in parse_sheet(raw.get("streak", []), "streak"):
+        meta["streak_last"]  = r.get("last_date") or None
+        meta["streak_count"] = int(r.get("count", 0) or 0)
+        break
+
+    for r in parse_sheet(raw.get("priorities", []), "priorities"):
+        if r.get("key"):
+            meta["priorities"][r["key"]] = r.get("level","")
+
+    for r in parse_sheet(raw.get("weekly_plan", []), "weekly_plan"):
+        day = r.get("day",""); c = r.get("course","")
+        if day and c:
+            meta["weekly_plan"].setdefault(day, []).append(c)
+
+    for r in parse_sheet(raw.get("pomodoro_log", []), "pomodoro_log"):
+        d = r.get("date",""); c = r.get("course","")
+        m = int(r.get("minutes", 0) or 0)
+        if d and c:
+            meta["pomodoro_log"].setdefault(d, {})[c] = (
+                meta["pomodoro_log"].get(d, {}).get(c, 0) + m)
+    return meta
+
+# ── Save functions (write + clear cache) ───────
 def save_data(data):
-    """Write all topic done-states back to Google Sheets."""
-    cached_sheet_data.clear()
-    sheet = ws("topics")
-    rows  = sheet.get_all_records()
-    # Build lookup: (course, topic) -> row number (1-indexed, +1 for header)
-    lookup = {(r["course"], r["topic"]): i+2 for i, r in enumerate(rows)}
+    sheet   = ws("topics")
+    rows    = sheet.get_all_values()
+    lookup  = {(r[0], r[1]): i+2 for i, r in enumerate(rows[1:]) if len(r) >= 2}
     updates = []
     for course, topics in data.items():
         for topic, done in topics.items():
             key = (course, topic)
             if key in lookup:
-                row_num = lookup[key]
-                updates.append(gspread.Cell(row_num, 3, str(done)))
+                updates.append(gspread.Cell(lookup[key], 3, str(done)))
             else:
                 sheet.append_row([course, topic, str(done)])
     if updates:
         sheet.update_cells(updates)
-
-def load_events():
-    """Load calendar events from Google Sheets."""
-    rows = safe_get_records("events")
-    return [{"title": r["title"], "date": r["date"],
-             "type": r["type"],
-             "course": r.get("course","General"),
-             "notes": r.get("notes","")} for r in rows]
+    fetch_all_data.clear()
 
 def save_events(events):
-    """Overwrite events sheet."""
-    cached_sheet_data.clear()
     sheet = ws("events")
     sheet.clear()
     sheet.append_row(["title","date","type","course","notes"])
@@ -161,88 +200,29 @@ def save_events(events):
         sheet.append_rows([[e.get("title",""), e.get("date",""),
                             e.get("type","Other"), e.get("course","General"),
                             e.get("notes","")] for e in events])
-
-def safe_get_records(sheet_name):
-    """Get all records safely — returns [] if sheet is empty or has no headers."""
-    try:
-        rows = cached_sheet_data(sheet_name)
-        if len(rows) < 2:
-            return []
-        headers = rows[0]
-        if not any(headers):
-            return []
-        return [dict(zip(headers, row)) for row in rows[1:] if any(row)]
-    except Exception:
-        return []
-
-def load_meta():
-    """Load streak, priorities, weekly_plan, pomodoro_log from sheets."""
-    meta = {
-        "streak_last": None, "streak_count": 0,
-        "priorities": {}, "weekly_plan": {}, "pomodoro_log": {}
-    }
-    # Streak
-    streak_rows = safe_get_records("streak")
-    if streak_rows:
-        r = streak_rows[0]
-        meta["streak_last"]  = r.get("last_date") or None
-        meta["streak_count"] = int(r.get("count", 0) or 0)
-
-    # Priorities
-    for r in safe_get_records("priorities"):
-        if r.get("key"):
-            meta["priorities"][r["key"]] = r.get("level","")
-
-    # Weekly plan
-    for r in safe_get_records("weekly_plan"):
-        day = r.get("day","")
-        c   = r.get("course","")
-        if day and c:
-            meta["weekly_plan"].setdefault(day, []).append(c)
-
-    # Pomodoro log
-    for r in safe_get_records("pomodoro_log"):
-        d  = r.get("date","")
-        c  = r.get("course","")
-        m  = int(r.get("minutes", 0) or 0)
-        if d and c:
-            meta["pomodoro_log"].setdefault(d, {})[c] = (
-                meta["pomodoro_log"].get(d, {}).get(c, 0) + m
-            )
-    return meta
+    fetch_all_data.clear()
 
 def save_meta(meta):
-    """Write meta back to sheets."""
-    cached_sheet_data.clear()
     # Streak
-    streak_ws = ws("streak")
-    streak_ws.clear()
-    streak_ws.append_row(["last_date","count"])
-    streak_ws.append_row([meta.get("streak_last",""), meta.get("streak_count",0)])
-
+    s = ws("streak"); s.clear()
+    s.append_row(["last_date","count"])
+    s.append_row([meta.get("streak_last",""), meta.get("streak_count",0)])
     # Priorities
-    prio_ws = ws("priorities")
-    prio_ws.clear()
-    prio_ws.append_row(["key","level"])
+    p = ws("priorities"); p.clear()
+    p.append_row(["key","level"])
     for k, v in meta.get("priorities",{}).items():
-        if v:
-            prio_ws.append_row([k, v])
-
+        if v: p.append_row([k, v])
     # Weekly plan
-    plan_ws = ws("weekly_plan")
-    plan_ws.clear()
-    plan_ws.append_row(["day","course"])
+    pl = ws("weekly_plan"); pl.clear()
+    pl.append_row(["day","course"])
     for day, courses in meta.get("weekly_plan",{}).items():
-        for c in courses:
-            plan_ws.append_row([day, c])
-
+        for c in courses: pl.append_row([day, c])
     # Pomodoro log
-    pomo_ws = ws("pomodoro_log")
-    pomo_ws.clear()
-    pomo_ws.append_row(["date","course","minutes"])
+    po = ws("pomodoro_log"); po.clear()
+    po.append_row(["date","course","minutes"])
     for d, courses in meta.get("pomodoro_log",{}).items():
-        for c, mins in courses.items():
-            pomo_ws.append_row([d, c, mins])
+        for c, mins in courses.items(): po.append_row([d, c, mins])
+    fetch_all_data.clear()
 
 # ── streak helper ─────────────────────────────
 def update_streak(meta):
