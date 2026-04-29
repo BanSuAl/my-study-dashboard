@@ -66,7 +66,9 @@ def github_read():
     r = requests.get(url, headers=get_headers())
     if r.status_code == 404:
         return DEFAULT_JSON.copy(), None
-    r.raise_for_status()
+    if not r.ok:
+        st.error(f"GitHub Read Error {r.status_code}: {r.text[:200]}")
+        return DEFAULT_JSON.copy(), None
     data = r.json()
     content = base64.b64decode(data["content"]).decode("utf-8")
     return json.loads(content), data["sha"]
@@ -79,7 +81,10 @@ def github_write(obj, sha=None):
     if sha:
         body["sha"] = sha
     r = requests.put(url, headers=get_headers(), json=body)
-    r.raise_for_status()
+    if not r.ok:
+        st.error(f"GitHub Write Error {r.status_code}: {r.text[:200]}")
+        return
+    return r
 
 # ── Cache all data in session state ───────────
 def get_all():
