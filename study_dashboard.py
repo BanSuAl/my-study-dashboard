@@ -101,7 +101,7 @@ def save_data(data):
 
 def save_events(events):
     db = get_db()
-    db.table("events").delete().neq("id",0).execute()
+    db.table("events").delete().gte("id",0).execute()
     if events:
         db.table("events").insert([{"title":e.get("title",""),"date":e.get("date",""),
             "type":e.get("type","Other"),"course":e.get("course","General"),
@@ -110,18 +110,18 @@ def save_events(events):
 
 def save_meta(meta):
     db = get_db()
-    db.table("streak").delete().neq("id",0).execute()
+    db.table("streak").delete().gte("id",0).execute()
     db.table("streak").insert({"last_date":meta.get("streak_last",""),
                                "count":meta.get("streak_count",0)}).execute()
-    db.table("priorities").delete().neq("id",0).execute()
+    db.table("priorities").delete().gte("id",0).execute()
     if meta.get("priorities"):
         db.table("priorities").insert([{"key":k,"level":v}
             for k,v in meta["priorities"].items() if v]).execute()
-    db.table("weekly_plan").delete().neq("id",0).execute()
+    db.table("weekly_plan").delete().gte("id",0).execute()
     if meta.get("weekly_plan"):
         db.table("weekly_plan").insert([{"day":day,"course":c}
             for day,cs in meta["weekly_plan"].items() for c in cs]).execute()
-    db.table("pomodoro_log").delete().neq("id",0).execute()
+    db.table("pomodoro_log").delete().gte("id",0).execute()
     if meta.get("pomodoro_log"):
         db.table("pomodoro_log").insert([{"date":d,"course":c,"minutes":m}
             for d,cs in meta["pomodoro_log"].items() for c,m in cs.items()]).execute()
