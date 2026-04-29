@@ -66,8 +66,8 @@ DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 
 def load_data():
     """Load topics from Google Sheets. Seeds default data on first run."""
-    sheet  = ws("topics")
-    rows   = sheet.get_all_records()   # [{"course":…, "topic":…, "done":…}, …]
+    sheet = ws("topics")
+    rows  = safe_get_records("topics")
 
     if not rows:
         # First run — seed with default data
@@ -132,6 +132,19 @@ def save_events(events):
                             e.get("type","Other"), e.get("course","General"),
                             e.get("notes","")] for e in events])
 
+def safe_get_records(sheet_name):
+    """Get all records safely — returns [] if sheet is empty or has no headers."""
+    try:
+        rows = ws(sheet_name).get_all_values()
+        if len(rows) < 2:
+            return []
+        headers = rows[0]
+        if not any(headers):
+            return []
+        return [dict(zip(headers, row)) for row in rows[1:] if any(row)]
+    except Exception:
+        return []
+
 def load_meta():
     """Load streak, priorities, weekly_plan, pomodoro_log from sheets."""
     meta = {
@@ -139,26 +152,26 @@ def load_meta():
         "priorities": {}, "weekly_plan": {}, "pomodoro_log": {}
     }
     # Streak
-    streak_rows = ws("streak").get_all_records()
+    streak_rows = safe_get_records("streak")
     if streak_rows:
         r = streak_rows[0]
         meta["streak_last"]  = r.get("last_date") or None
         meta["streak_count"] = int(r.get("count", 0) or 0)
 
     # Priorities
-    for r in ws("priorities").get_all_records():
+    for r in safe_get_records("priorities"):
         if r.get("key"):
             meta["priorities"][r["key"]] = r.get("level","")
 
     # Weekly plan
-    for r in ws("weekly_plan").get_all_records():
+    for r in safe_get_records("weekly_plan"):
         day = r.get("day","")
         c   = r.get("course","")
         if day and c:
             meta["weekly_plan"].setdefault(day, []).append(c)
 
     # Pomodoro log
-    for r in ws("pomodoro_log").get_all_records():
+    for r in safe_get_records("pomodoro_log"):
         d  = r.get("date","")
         c  = r.get("course","")
         m  = int(r.get("minutes", 0) or 0)
