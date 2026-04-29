@@ -1,5 +1,5 @@
 streamlit
 plotly
 pandas
-gspread
-google-auth
+supabase
+ 
