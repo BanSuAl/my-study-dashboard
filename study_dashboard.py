@@ -360,7 +360,7 @@ def heading(text, sub=""):
 # ── next exam helper ──────────────────────────
 def next_exam():
     exams = [e for e in events if e["type"]=="Exam"
-             and datetime.strptime(e["date"],"%Y-%m-%d").date() >= today]
+             and safe_date(e["date"]) >= today]
     if not exams: return None
     return min(exams, key=lambda x: x["date"])
 
@@ -422,7 +422,7 @@ with st.sidebar:
     # ── Next exam countdown ──
     ne = next_exam()
     if ne:
-        ne_d  = datetime.strptime(ne["date"],"%Y-%m-%d").date()
+        ne_d  = safe_date(ne["date"])
         diff  = (ne_d - today).days
         urgency_clr = "#e63946" if diff <= 3 else ("#e76f51" if diff <= 7 else ACCENT)
         st.markdown(f"""
@@ -442,11 +442,11 @@ with st.sidebar:
     st.markdown(f'<div style="{label_style()}margin-bottom:.6rem;">Upcoming</div>',
                 unsafe_allow_html=True)
     upcoming = sorted([e for e in events
-                       if datetime.strptime(e["date"],"%Y-%m-%d").date() >= today],
+                       if safe_date(e["date"]) >= today],
                       key=lambda x: x["date"])[:5]
     if upcoming:
         for ev in upcoming:
-            ev_d = datetime.strptime(ev["date"],"%Y-%m-%d").date()
+            ev_d = safe_date(ev["date"])
             diff = (ev_d - today).days
             tag  = "TODAY" if diff==0 else ("Tomorrow" if diff==1 else f"{diff}d")
             tc   = "#e63946" if diff<=1 else ("#e76f51" if diff<=4 else ACCENT)
@@ -476,7 +476,7 @@ if page == "📊  Progress":
     # Exam countdown banner
     ne = next_exam()
     if ne:
-        ne_d = datetime.strptime(ne["date"],"%Y-%m-%d").date()
+        ne_d = safe_date(ne["date"])
         diff = (ne_d - today).days
         if diff <= 7:
             uc = "#e63946" if diff<=2 else "#e76f51"
@@ -654,11 +654,11 @@ if page == "📊  Progress":
             clr   = color_map[course]
 
             c_evs = sorted([e for e in events if e["course"]==course
-                            and datetime.strptime(e["date"],"%Y-%m-%d").date() >= today],
+                            and safe_date(e["date"]) >= today],
                            key=lambda x: x["date"])[:2]
             pills = ""
             for ev in c_evs:
-                ev_d = datetime.strptime(ev["date"],"%Y-%m-%d").date()
+                ev_d = safe_date(ev["date"])
                 diff = (ev_d - today).days
                 pc = "#e63946" if ev["type"]=="Exam" else "#e76f51"
                 pbg= "#fde8ea" if ev["type"]=="Exam" else "#fdeee9"
@@ -741,6 +741,13 @@ elif page == "⏱️  Pomodoro":
         seconds_total = minutes * 60
         msg_text      = "Focus time — stay off your phone!" if "Work" in pomo_type else "Take a proper break ☕"
 
+        # Custom duration option
+        use_custom = st.checkbox("Custom duration", key="pomo_custom")
+        if use_custom:
+            custom_mins = st.number_input("Minutes", min_value=1, max_value=180, value=minutes, step=1, key="pomo_custom_mins")
+            minutes = custom_mins
+            seconds_total = minutes * 60
+
         components.html(f"""
         <!DOCTYPE html>
         <html>
@@ -753,19 +760,12 @@ elif page == "⏱️  Pomodoro":
             display: flex; flex-direction: column; align-items: center;
             padding: 1.8rem 1rem 1.4rem; font-family: 'DM Sans', sans-serif;
           }}
-          #pomo-display {{
-            font-family: 'Playfair Display', serif;
-            font-size: 5rem; font-weight: 800;
-            color: {ACCENT}; letter-spacing: -.02em;
-            margin: .5rem 0 .4rem; line-height: 1;
-            transition: color .4s;
-          }}
           #pomo-ring {{
             position: relative; width: 200px; height: 200px; margin-bottom: .8rem;
           }}
           #pomo-ring svg {{ transform: rotate(-90deg); }}
           #pomo-track {{ stroke: {'#2a3248' if dark else '#f0ede8'}; }}
-          #pomo-fill  {{ stroke: {ACCENT}; transition: stroke-dashoffset 1s linear; stroke-dasharray: 565.5; stroke-dashoffset: 0; }}
+          #pomo-fill  {{ stroke: {ACCENT}; transition: stroke-dashoffset 0.5s linear; stroke-dasharray: 565.5; stroke-dashoffset: 0; }}
           #pomo-center {{
             position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
             text-align: center;
@@ -803,6 +803,10 @@ elif page == "⏱️  Pomodoro":
             font-size: .82rem; color: #52b788; margin-top: .8rem;
             font-weight: 600; min-height: 1.2rem; text-align: center;
           }}
+          #bg-note {{
+            font-size: .72rem; color: {'#5a6080' if dark else '#9a948c'};
+            margin-top: .6rem; text-align: center; max-width: 240px;
+          }}
         </style>
         </head>
         <body>
@@ -826,85 +830,143 @@ elif page == "⏱️  Pomodoro":
           <button class="btn-secondary" onclick="resetPomo()">↺  Reset</button>
         </div>
         <div id="pomo-done"></div>
+        <div id="bg-note"></div>
 
         <script>
-          const TOTAL = {seconds_total};
-          const CIRC  = 2 * Math.PI * 90;   // 565.49
-          let secsLeft   = TOTAL;
-          let interval   = null;
+          const TOTAL   = {seconds_total};
+          const CIRC    = 2 * Math.PI * 90;
+          const COURSE  = "{pomo_course}";
+          const IS_WORK = {'true' if 'Work' in pomo_type else 'false'};
+
+          let startTs    = null;   // timestamp when timer started
+          let elapsed    = 0;      // seconds already elapsed before current start
+          let rafId      = null;
           let running    = false;
+          let finished   = false;
 
           const fillEl   = document.getElementById('pomo-fill');
           const timeEl   = document.getElementById('pomo-time');
           const msgEl    = document.getElementById('pomo-msg');
           const doneEl   = document.getElementById('pomo-done');
+          const bgNote   = document.getElementById('bg-note');
           const startBtn = document.getElementById('btn-start');
 
           fillEl.style.strokeDasharray  = CIRC;
           fillEl.style.strokeDashoffset = 0;
 
           function fmt(s) {{
+            s = Math.max(0, Math.round(s));
             return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
           }}
 
-          function updateRing() {{
+          function updateRing(secsLeft) {{
             const offset = CIRC * (1 - secsLeft / TOTAL);
             fillEl.style.strokeDashoffset = offset;
           }}
 
-          function tick() {{
-            if (secsLeft <= 0) {{
-              clearInterval(interval); interval = null; running = false;
-              timeEl.innerText  = '00:00';
-              timeEl.style.color = '#52b788';
-              fillEl.style.stroke = '#52b788';
-              msgEl.innerText   = '';
-              doneEl.innerText  = '✅ Session complete!';
-              startBtn.disabled = true;
-              startBtn.innerText = 'Done';
-              try {{ new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play(); }} catch(e) {{}}
-              return;
+          function onFinish() {{
+            if (finished) return;
+            finished = true;
+            running  = false;
+            cancelAnimationFrame(rafId);
+            timeEl.innerText   = '00:00';
+            timeEl.style.color = '#52b788';
+            fillEl.style.stroke = '#52b788';
+            fillEl.style.strokeDashoffset = CIRC;
+            msgEl.innerText    = '';
+            doneEl.innerText   = '✅ Session complete! Logging…';
+            startBtn.disabled  = true;
+            startBtn.innerText = 'Done ✓';
+            bgNote.innerText   = '';
+            try {{ new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play(); }} catch(e) {{}}
+
+            // Auto-log if work session — post message to parent Streamlit
+            if (IS_WORK) {{
+              const mins = Math.round(TOTAL / 60);
+              try {{
+                window.parent.postMessage({{
+                  type: 'pomo_complete',
+                  course: COURSE,
+                  minutes: mins
+                }}, '*');
+              }} catch(e) {{}}
+              doneEl.innerText = '✅ Logged ' + mins + ' min for ' + COURSE + '!';
+            }} else {{
+              doneEl.innerText = '✅ Break done! Start your next session.';
             }}
-            secsLeft--;
-            timeEl.innerText = fmt(secsLeft);
-            updateRing();
           }}
 
+          function frame() {{
+            if (!running) return;
+            const now      = performance.now();
+            const totalElapsed = elapsed + (now - startTs) / 1000;
+            const secsLeft = TOTAL - totalElapsed;
+            if (secsLeft <= 0) {{
+              onFinish();
+              return;
+            }}
+            timeEl.innerText = fmt(secsLeft);
+            updateRing(secsLeft);
+            rafId = requestAnimationFrame(frame);
+          }}
+
+          // Use Page Visibility API to keep accurate time when tab is hidden
+          document.addEventListener('visibilitychange', function() {{
+            if (!running) return;
+            if (document.hidden) {{
+              // Pause the animation frame loop (saves battery) but time keeps via timestamps
+              cancelAnimationFrame(rafId);
+            }} else {{
+              // Recalculate and resume when tab comes back
+              const now = performance.now();
+              const totalElapsed = elapsed + (now - startTs) / 1000;
+              if (totalElapsed >= TOTAL) {{
+                onFinish();
+              }} else {{
+                rafId = requestAnimationFrame(frame);
+              }}
+            }}
+          }});
+
           function startPomo() {{
-            if (running) return;
-            running = true;
+            if (running || finished) return;
+            running  = true;
+            startTs  = performance.now();
             startBtn.disabled  = true;
             startBtn.innerText = 'Running…';
             doneEl.innerText   = '';
-            interval = setInterval(tick, 1000);
+            bgNote.innerText   = '⚡ Timer keeps running even if you switch tabs';
+            rafId = requestAnimationFrame(frame);
           }}
 
           function resetPomo() {{
-            clearInterval(interval); interval = null; running = false;
-            secsLeft = TOTAL;
-            timeEl.innerText  = fmt(secsLeft);
+            cancelAnimationFrame(rafId);
+            running = false; finished = false;
+            startTs = null; elapsed = 0;
+            timeEl.innerText  = fmt(TOTAL);
             timeEl.style.color = '{ACCENT}';
             fillEl.style.stroke = '{ACCENT}';
             fillEl.style.strokeDashoffset = 0;
             msgEl.innerText   = '{msg_text}';
             doneEl.innerText  = '';
+            bgNote.innerText  = '';
             startBtn.disabled  = false;
             startBtn.innerText = '▶  Start';
           }}
         </script>
         </body>
         </html>
-        """, height=480)
+        """, height=510)
 
         st.markdown("<div style='height:.6rem'></div>", unsafe_allow_html=True)
 
         # Log a completed session manually
-        st.markdown(f'<div style="{label_style()}margin-bottom:.5rem;">Log Completed Session</div>',
+        st.markdown(f'<div style="{label_style()}margin-bottom:.5rem;">Log Study Time Manually</div>',
                     unsafe_allow_html=True)
         log_course = st.selectbox("Course", list(data.keys()), key="log_course")
-        log_min    = st.number_input("Minutes studied", min_value=5, max_value=180,
+        log_min    = st.number_input("Minutes studied (type any amount)", min_value=1, max_value=600,
                                      value=25, step=5, key="log_min")
-        if st.button("✅  Log Session", use_container_width=True):
+        if st.button("✅  Add to Today's Log", use_container_width=True):
             today_str = str(today)
             meta.setdefault("pomodoro_log",{}).setdefault(today_str,{})
             meta["pomodoro_log"][today_str][log_course] = (
@@ -1078,7 +1140,7 @@ elif page == "📅  Calendar":
                         unsafe_allow_html=True)
         else:
             for i,ev in enumerate(sorted(events, key=lambda x: x["date"])):
-                ev_d = datetime.strptime(ev["date"],"%Y-%m-%d").date()
+                ev_d = safe_date(ev["date"])
                 diff = (ev_d-today).days; past = ev_d<today
                 dc  = "#e63946" if ev["type"]=="Exam" else ("#e76f51" if ev["type"]=="Due Date" else "#4361ee")
                 lbl = "Past" if past else ("TODAY" if diff==0 else f"{diff}d left")
@@ -1111,6 +1173,8 @@ elif page == "📆  Weekly Plan":
     heading("Weekly Study Plan", "Assign courses to days — plan your week")
 
     plan = meta.get("weekly_plan", {d:[] for d in DAYS})
+    # Clean up any deleted courses from the plan
+    plan = {d: [c for c in cs if c in data] for d, cs in plan.items()}
 
     # PDF export button (generates printable HTML → triggers browser print)
     st.markdown(f"""
