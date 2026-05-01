@@ -117,6 +117,27 @@ def safe_date(date_str):
 
 # ── Load functions ────────────────────────────
 @st.cache_data(ttl=30)
+def load_todos():
+    rows = db_get("todos", "order=created_at.asc")
+    if not isinstance(rows, list): return []
+    return [{"id": r.get("id"), "text": r.get("text",""), "done": bool(r.get("done", False))}
+            for r in rows if r.get("text")]
+
+def save_todo_done(row_id, done):
+    db_update("todos", {"done": done}, row_id)
+    load_todos.clear()
+
+def add_todo(text):
+    db_insert("todos", {"text": text.strip(), "done": False})
+    load_todos.clear()
+
+def delete_todo(row_id):
+    try:
+        requests.delete(f"{BASE}/todos?id=eq.{row_id}", headers=HEADERS, timeout=10)
+    except Exception: pass
+    load_todos.clear()
+
+@st.cache_data(ttl=30)
 def load_data():
     rows = db_get("topics")
     if not rows:
@@ -323,6 +344,7 @@ if "cal_month" not in st.session_state: st.session_state.cal_month = date.today(
 data   = load_data()
 events = load_events()
 meta   = load_meta()
+todos  = load_todos()
 today  = date.today()
 course_list = list(data.keys())
 color_map   = {c: COURSE_COLORS[i % len(COURSE_COLORS)] for i, c in enumerate(course_list)}
@@ -479,255 +501,367 @@ with st.sidebar:
 # ════════════════════════════════════════════════
 if page == "📊  Progress":
 
-    # Exam countdown banner
-    ne = next_exam()
-    if ne:
-        ne_d = safe_date(ne["date"])
-        diff = (ne_d - today).days
-        if diff <= 7:
-            uc = "#e63946" if diff<=2 else "#e76f51"
-            ubg = "#fde8ea44" if dark else ("#fde8ea" if diff<=2 else "#fdeee9")
-            st.markdown(f"""
-            <div style="background:{ubg};border:1.5px solid {uc}55;border-left:4px solid {uc};
-                        border-radius:10px;padding:.9rem 1.2rem;margin-bottom:1.5rem;
-                        display:flex;align-items:center;gap:1rem;">
-                <div style="font-size:1.6rem;">🚨</div>
-                <div>
-                    <div style="font-size:.84rem;font-weight:700;color:{uc};">
-                        {"TODAY" if diff==0 else f"In {diff} day{'s' if diff!=1 else ''}"} — {ne['title']}</div>
-                    <div style="font-size:.76rem;color:{TEXTD};margin-top:2px;">{ne['course']} · {ne_d.strftime('%A, %b %d')}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+    # Split into main content (left) and todo panel (right)
+    main_col, todo_col = st.columns([3, 1], gap="large")
 
-    heading("Study Progress", f"Spring 2026 — {len(data)} courses tracked")
+    with main_col:
 
-    # ── EXAM DATES TABLE ──────────────────────────────────────────
-    exam_events = sorted(
-        [e for e in events if e.get("type") == "Exam" and safe_date(e["date"]) >= today],
-        key=lambda x: x["date"]
-    )
-    if exam_events:
-        st.markdown(f"""
-        <div style="background:{WHITE};border:1.5px solid {BORDER};border-radius:14px;
-                    padding:1.2rem 1.4rem;margin-bottom:1.5rem;">
-            <div style="font-family:'Playfair Display',serif;font-size:1.1rem;
-                        font-weight:800;color:{TEXT};margin-bottom:1rem;">📋 Upcoming Exams</div>
-        """, unsafe_allow_html=True)
-        for e in exam_events:
-            ex_date = safe_date(e["date"])
-            diff = (ex_date - today).days
-            if diff == 0:
-                badge_color = "#e63946"; badge_bg = "#fde8ea"; badge_txt = "TODAY 🚨"
-            elif diff <= 3:
-                badge_color = "#e63946"; badge_bg = "#fde8ea"; badge_txt = f"{diff}d left 🔴"
-            elif diff <= 7:
-                badge_color = "#e76f51"; badge_bg = "#fdeee9"; badge_txt = f"{diff}d left 🟠"
-            else:
-                badge_color = "#2d6a4f"; badge_bg = "#d8f3dc"; badge_txt = f"{diff}d left 🟢"
-            st.markdown(f"""
-            <div style="display:flex;justify-content:space-between;align-items:center;
-                        padding:.6rem .8rem;margin-bottom:.4rem;background:{SURF2};
-                        border-radius:8px;border-left:3px solid {badge_color};">
-                <div>
-                    <div style="font-weight:700;font-size:.9rem;color:{TEXT};">{e['title']}</div>
-                    <div style="font-size:.75rem;color:{TEXTD};margin-top:2px;">
-                        {e.get('course','General')} · {ex_date.strftime('%A, %b %d %Y')}
+        # Exam countdown banner
+        ne = next_exam()
+        if ne:
+            ne_d = safe_date(ne["date"])
+            diff = (ne_d - today).days
+            if diff <= 7:
+                uc = "#e63946" if diff<=2 else "#e76f51"
+                ubg = "#fde8ea44" if dark else ("#fde8ea" if diff<=2 else "#fdeee9")
+                st.markdown(f"""
+                <div style="background:{ubg};border:1.5px solid {uc}55;border-left:4px solid {uc};
+                            border-radius:10px;padding:.9rem 1.2rem;margin-bottom:1.5rem;
+                            display:flex;align-items:center;gap:1rem;">
+                    <div style="font-size:1.6rem;">🚨</div>
+                    <div>
+                        <div style="font-size:.84rem;font-weight:700;color:{uc};">
+                            {"TODAY" if diff==0 else f"In {diff} day{'s' if diff!=1 else ''}"} — {ne['title']}</div>
+                        <div style="font-size:.76rem;color:{TEXTD};margin-top:2px;">{ne['course']} · {ne_d.strftime('%A, %b %d')}</div>
                     </div>
                 </div>
-                <div style="background:{badge_bg};color:{badge_color};font-family:'DM Mono',monospace;
-                            font-size:.75rem;font-weight:700;padding:4px 10px;border-radius:6px;
-                            white-space:nowrap;">{badge_txt}</div>
+                """, unsafe_allow_html=True)
+
+        heading("Study Progress", f"Spring 2026 — {len(data)} courses tracked")
+
+        # ── EXAM DATES TABLE
+        exam_events = sorted(
+            [e for e in events if e.get("type") == "Exam" and safe_date(e["date"]) >= today],
+            key=lambda x: x["date"]
+        )
+        if exam_events:
+            st.markdown(f"""
+            <div style="background:{WHITE};border:1.5px solid {BORDER};border-radius:14px;
+                        padding:1.2rem 1.4rem;margin-bottom:1.5rem;">
+                <div style="font-family:'Playfair Display',serif;font-size:1.1rem;
+                            font-weight:800;color:{TEXT};margin-bottom:1rem;">📋 Upcoming Exams</div>
+            """, unsafe_allow_html=True)
+            for e in exam_events:
+                ex_date = safe_date(e["date"])
+                diff = (ex_date - today).days
+                if diff == 0:
+                    badge_color = "#e63946"; badge_bg = "#fde8ea"; badge_txt = "TODAY 🚨"
+                elif diff <= 3:
+                    badge_color = "#e63946"; badge_bg = "#fde8ea"; badge_txt = f"{diff}d left 🔴"
+                elif diff <= 7:
+                    badge_color = "#e76f51"; badge_bg = "#fdeee9"; badge_txt = f"{diff}d left 🟠"
+                else:
+                    badge_color = "#2d6a4f"; badge_bg = "#d8f3dc"; badge_txt = f"{diff}d left 🟢"
+                st.markdown(f"""
+                <div style="display:flex;justify-content:space-between;align-items:center;
+                            padding:.6rem .8rem;margin-bottom:.4rem;background:{SURF2};
+                            border-radius:8px;border-left:3px solid {badge_color};">
+                    <div>
+                        <div style="font-weight:700;font-size:.9rem;color:{TEXT};">{e['title']}</div>
+                        <div style="font-size:.75rem;color:{TEXTD};margin-top:2px;">
+                            {e.get('course','General')} · {ex_date.strftime('%A, %b %d %Y')}
+                        </div>
+                    </div>
+                    <div style="background:{badge_bg};color:{badge_color};font-family:'DM Mono',monospace;
+                                font-size:.75rem;font-weight:700;padding:4px 10px;border-radius:6px;
+                                white-space:nowrap;">{badge_txt}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # ── ACHIEVEMENT BADGES
+        streak        = meta.get("streak_count", 0)
+        pomo_log      = meta.get("pomodoro_log", {})
+        pomo_days     = len(pomo_log)
+        total_mins    = sum(sum(v.values()) for v in pomo_log.values()) if pomo_log else 0
+        done_all_badges = sum(sum(1 for s in v.values() if s) for v in data.values())
+        courses_done  = sum(1 for c in data.values() if len(c) > 0 and all(c.values()))
+
+        badges = []
+        if streak >= 1:   badges.append(("🔥", f"{streak} Day Streak", "#e63946", "#fde8ea"))
+        if streak >= 7:   badges.append(("🏆", "Week Warrior", "#e76f51", "#fdeee9"))
+        if streak >= 30:  badges.append(("👑", "Month Master", "#7209b7", "#f0e6ff"))
+        if done_all_badges >= 10: badges.append(("✅", "10 Topics Done", "#2d6a4f", "#d8f3dc"))
+        if done_all_badges >= 25: badges.append(("🎯", "25 Topics Done", "#0077b6", "#e0f0ff"))
+        if total_mins >= 60:  badges.append(("⏱️", "1hr Studied", "#4361ee", "#eef0ff"))
+        if total_mins >= 300: badges.append(("💪", "5hrs Studied", "#7209b7", "#f0e6ff"))
+        if courses_done >= 1: badges.append(("🎓", "Course Complete!", "#2d6a4f", "#d8f3dc"))
+        if pomo_days >= 3:    badges.append(("📅", "3-Day Grind", "#e76f51", "#fdeee9"))
+
+        if badges:
+            badge_html = "".join([
+                f'<div style="display:inline-flex;align-items:center;gap:6px;background:{bg};' 
+                f'color:{clr};border-radius:20px;padding:5px 12px;margin:3px;font-size:.78rem;font-weight:600;">'
+                f'{icon} {label}</div>'
+                for icon, label, clr, bg in badges
+            ])
+            st.markdown(f"""
+            <div style="background:{WHITE};border:1.5px solid {BORDER};border-radius:14px;
+                        padding:1rem 1.4rem;margin-bottom:1.5rem;">
+                <div style="font-family:'Playfair Display',serif;font-size:1.1rem;
+                            font-weight:800;color:{TEXT};margin-bottom:.8rem;">🏅 Achievements</div>
+                <div style="display:flex;flex-wrap:wrap;gap:4px;">{badge_html}</div>
             </div>
             """, unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── ACHIEVEMENT BADGES ────────────────────────────────────────
-    # Pre-calculate stats once to avoid re-summing on every UI interaction
-    streak        = meta.get("streak_count", 0)
-    pomo_log      = meta.get("pomodoro_log", {})
-    pomo_days     = len(pomo_log)
-    total_mins    = sum(sum(v.values()) for v in pomo_log.values()) if pomo_log else 0
-    done_all_badges = sum(sum(1 for s in v.values() if s) for v in data.values())
-    courses_done  = sum(1 for c in data.values() if len(c) > 0 and all(c.values()))
-
-    badges = []
-    if streak >= 1:   badges.append(("🔥", f"{streak} Day Streak", "#e63946", "#fde8ea"))
-    if streak >= 7:   badges.append(("🏆", "Week Warrior", "#e76f51", "#fdeee9"))
-    if streak >= 30:  badges.append(("👑", "Month Master", "#7209b7", "#f0e6ff"))
-    if done_all_badges >= 10: badges.append(("✅", "10 Topics Done", "#2d6a4f", "#d8f3dc"))
-    if done_all_badges >= 25: badges.append(("🎯", "25 Topics Done", "#0077b6", "#e0f0ff"))
-    if total_mins >= 60:  badges.append(("⏱️", "1hr Studied", "#4361ee", "#eef0ff"))
-    if total_mins >= 300: badges.append(("💪", "5hrs Studied", "#7209b7", "#f0e6ff"))
-    if courses_done >= 1: badges.append(("🎓", "Course Complete!", "#2d6a4f", "#d8f3dc"))
-    if pomo_days >= 3:    badges.append(("📅", "3-Day Grind", "#e76f51", "#fdeee9"))
-
-    if badges:
-        badge_html = "".join([
-            f'<div style="display:inline-flex;align-items:center;gap:6px;background:{bg};'
-            f'color:{clr};border-radius:20px;padding:5px 12px;margin:3px;font-size:.78rem;font-weight:600;">'
-            f'{icon} {label}</div>'
-            for icon, label, clr, bg in badges
-        ])
+        # ── DAILY STUDY GOAL
+        today_str = str(today)
+        today_mins = sum(meta.get("pomodoro_log", {}).get(today_str, {}).values())
+        goal_mins = int(meta.get("priorities", {}).get("__daily_goal__", 120) or 120)
+        goal_pct  = min(100, int(today_mins / goal_mins * 100))
+        goal_clr  = "#e63946" if goal_pct < 33 else ("#e76f51" if goal_pct < 66 else "#2d6a4f")
+        goal_emoji = "🔴" if goal_pct < 33 else ("🟠" if goal_pct < 66 else "🟢")
         st.markdown(f"""
         <div style="background:{WHITE};border:1.5px solid {BORDER};border-radius:14px;
                     padding:1rem 1.4rem;margin-bottom:1.5rem;">
-            <div style="font-family:'Playfair Display',serif;font-size:1.1rem;
-                        font-weight:800;color:{TEXT};margin-bottom:.8rem;">🏅 Achievements</div>
-            <div style="display:flex;flex-wrap:wrap;gap:4px;">{badge_html}</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;">
+                <div style="font-family:'Playfair Display',serif;font-size:1.1rem;
+                            font-weight:800;color:{TEXT};">⏰ Daily Study Goal {goal_emoji}</div>
+                <div style="font-family:'DM Mono',monospace;font-size:.85rem;color:{goal_clr};font-weight:700;">
+                    {today_mins}min / {goal_mins}min</div>
+            </div>
+            <div style="background:{SURF2};border-radius:99px;height:8px;overflow:hidden;">
+                <div style="background:{goal_clr};width:{goal_pct}%;height:100%;
+                            border-radius:99px;transition:width .3s;"></div>
+            </div>
+            <div style="font-size:.74rem;color:{TEXTD};margin-top:.4rem;">
+                {"Goal reached! Great work today! 🎉" if goal_pct >= 100
+                 else f"{goal_mins - today_mins} min remaining to reach your daily goal"}</div>
         </div>
         """, unsafe_allow_html=True)
 
-    # ── DAILY STUDY GOAL ─────────────────────────────────────────
-    today_str = str(today)
-    today_mins = sum(meta.get("pomodoro_log", {}).get(today_str, {}).values())
-    goal_mins = int(meta.get("priorities", {}).get("__daily_goal__", 120) or 120)
-    goal_pct  = min(100, int(today_mins / goal_mins * 100))
-    goal_clr  = "#e63946" if goal_pct < 33 else ("#e76f51" if goal_pct < 66 else "#2d6a4f")
-    goal_emoji = "🔴" if goal_pct < 33 else ("🟠" if goal_pct < 66 else "🟢")
-    st.markdown(f"""
-    <div style="background:{WHITE};border:1.5px solid {BORDER};border-radius:14px;
-                padding:1rem 1.4rem;margin-bottom:1.5rem;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;">
-            <div style="font-family:'Playfair Display',serif;font-size:1.1rem;
-                        font-weight:800;color:{TEXT};">⏰ Daily Study Goal {goal_emoji}</div>
-            <div style="font-family:'DM Mono',monospace;font-size:.85rem;color:{goal_clr};font-weight:700;">
-                {today_mins}min / {goal_mins}min</div>
-        </div>
-        <div style="background:{SURF2};border-radius:99px;height:8px;overflow:hidden;">
-            <div style="background:{goal_clr};width:{goal_pct}%;height:100%;
-                        border-radius:99px;transition:width .3s;"></div>
-        </div>
-        <div style="font-size:.74rem;color:{TEXTD};margin-top:.4rem;">
-            {"🎉 Goal reached! Great work today!" if goal_pct >= 100
-             else f"{goal_mins - today_mins} min remaining to reach your daily goal"}</div>
-    </div>
-    """, unsafe_allow_html=True)
+        with st.expander("⚙️ Set Daily Study Goal"):
+            current_goal = int(meta.get("priorities", {}).get("__daily_goal__", 120) or 120)
+            with st.form("goal_form"):
+                new_goal = st.slider("Daily goal (minutes)", 30, 480, current_goal, 30)
+                if st.form_submit_button("💾 Save Goal"):
+                    meta.setdefault("priorities", {})["__daily_goal__"] = new_goal
+                    if save_meta(meta):
+                        st.success("Goal saved!")
+                        st.rerun()
 
-    # Daily goal setter
-    with st.expander("⚙️ Set Daily Study Goal"):
-        current_goal = int(meta.get("priorities", {}).get("__daily_goal__", 120) or 120)
-        with st.form("goal_form"):
-            new_goal = st.slider("Daily goal (minutes)", 30, 480, current_goal, 30)
-            if st.form_submit_button("💾 Save Goal"):
-                meta.setdefault("priorities", {})["__daily_goal__"] = new_goal
-                if save_meta(meta):
-                    st.success("Goal saved!")
-                    st.rerun()
-
-    # Stats row
-    pct_all = int(done_all/total_all*100) if total_all else 0
-    s1,s2,s3,s4 = st.columns(4)
-    for col, val, lbl in [(s1,f"{pct_all}%","Overall"),
-                           (s2,done_all,"Topics Done"),
-                           (s3,total_all-done_all,"Remaining"),
-                           (s4,meta.get("streak_count",0),"Day Streak 🔥")]:
-        with col:
-            st.markdown(f"""
-            <div style="background:{WHITE};border:1.5px solid {BORDER};border-radius:12px;
-                        padding:1rem;text-align:center;margin-bottom:1rem;">
-                <div style="font-family:'Playfair Display',serif;font-size:2rem;
-                            font-weight:800;color:{ACCENT};line-height:1;">{val}</div>
-                <div style="{label_style()}margin-top:4px;">{lbl}</div>
-            </div>""", unsafe_allow_html=True)
-
-    # Bar chart
-    names,pcts,clrs = [],[],[]
-    for c in course_list:
-        t=len(data[c]); d=sum(1 for s in data[c].values() if s)
-        names.append(c); pcts.append(int(d/t*100) if t else 0); clrs.append(color_map[c])
-    fig = go.Figure(go.Bar(x=names, y=pcts, marker_color=clrs,
-                           text=[f"{p}%" for p in pcts], textposition="outside",
-                           textfont=dict(family="DM Mono",size=11,color=TEXTM)))
-    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
-                      font=dict(family="DM Sans",color=TEXTM),
-                      yaxis=dict(range=[0,130],showgrid=False,zeroline=False,showticklabels=False),
-                      xaxis=dict(showgrid=False,tickfont=dict(family="DM Mono",size=11,color=TEXTM)),
-                      margin=dict(t=30,b=5,l=0,r=0),height=210,showlegend=False,bargap=0.4)
-    st.plotly_chart(fig, use_container_width=True, key="bar")
-    st.markdown("<hr>", unsafe_allow_html=True)
-
-    # 2-column course cards
-    course_items = list(data.items())
-    for i in range(0, len(course_items), 2):
-        col_a, col_b = st.columns(2, gap="medium")
-        for col, idx in [(col_a,i),(col_b,i+1)]:
-            if idx >= len(course_items): break
-            course, lectures = course_items[idx]
-            total = len(lectures)
-            done  = sum(1 for s in lectures.values() if s)
-            pct   = done/total if total else 0
-            clr   = color_map[course]
-
-            c_evs = sorted([e for e in events if e["course"]==course
-                            and safe_date(e["date"]) >= today],
-                           key=lambda x: x["date"])[:2]
-            pills = ""
-            for ev in c_evs:
-                ev_d = safe_date(ev["date"])
-                diff = (ev_d - today).days
-                pc = "#e63946" if ev["type"]=="Exam" else "#e76f51"
-                pbg= "#fde8ea" if ev["type"]=="Exam" else "#fdeee9"
-                lbl= "TODAY" if diff==0 else f"{diff}d"
-                pills += (f'<span style="background:{pbg};color:{pc};font-family:DM Mono,monospace;'
-                          f'font-size:.61rem;font-weight:600;padding:2px 8px;border-radius:4px;">'
-                          f'{ev["type"]} · {lbl}</span> ')
-
+        # Stats row
+        pct_all = int(done_all/total_all*100) if total_all else 0
+        s1,s2,s3,s4 = st.columns(4)
+        for col, val, lbl in [(s1,f"{pct_all}%","Overall"),
+                               (s2,done_all,"Topics Done"),
+                               (s3,total_all-done_all,"Remaining"),
+                               (s4,meta.get("streak_count",0),"Day Streak 🔥")]:
             with col:
                 st.markdown(f"""
-                <div style="{card_style(clr)}">
-                    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1rem;">
-                        <div>
-                            <div style="{label_style()}margin-bottom:3px;">Course</div>
-                            <div style="font-family:'Playfair Display',serif;font-size:1.4rem;
-                                        font-weight:800;color:{TEXT};line-height:1.1;">{course}</div>
-                        </div>
-                        <div style="text-align:right;">
-                            <div style="font-family:'Playfair Display',serif;font-size:1.7rem;
-                                        font-weight:800;color:{clr};line-height:1;">{int(pct*100)}%</div>
-                            <div style="font-family:'DM Mono',monospace;font-size:.65rem;color:{TEXTD};">{done}/{total}</div>
-                        </div>
-                    </div>
-                    <div style="background:{SURF2};border-radius:99px;height:5px;margin-bottom:.9rem;overflow:hidden;">
-                        <div style="background:{clr};width:{int(pct*100)}%;height:100%;border-radius:99px;"></div>
-                    </div>
-                    <div style="display:flex;gap:5px;flex-wrap:wrap;min-height:1.3rem;">
-                        {pills if pills else f'<span style="font-size:.72rem;color:{TEXTD};font-family:DM Mono,monospace;">No upcoming events</span>'}
-                    </div>
+                <div style="background:{WHITE};border:1.5px solid {BORDER};border-radius:12px;
+                            padding:1rem;text-align:center;margin-bottom:1rem;">
+                    <div style="font-family:'Playfair Display',serif;font-size:2rem;
+                                font-weight:800;color:{ACCENT};line-height:1;">{val}</div>
+                    <div style="{label_style()}margin-top:4px;">{lbl}</div>
                 </div>""", unsafe_allow_html=True)
 
-                with st.expander(f"Topics — {course}"):
-                    changed = False
-                    prio_changed = False
-                    for lec, is_done in lectures.items():
-                        prio_key = f"{course}::{lec}"
-                        prio = meta.get("priorities",{}).get(prio_key,"")
-                        tc, tb = st.columns([5,1])
-                        with tc:
-                            checked = st.checkbox(
-                                f"{prio_icon(prio)} {lec}" if prio else lec,
-                                value=is_done, key=f"chk_{course}_{lec}")
-                            if checked != is_done:
-                                data[course][lec] = checked
-                                changed = True
-                        with tb:
-                            new_prio = st.selectbox("Priority",["","high","medium","low"],
-                                                    index=["","high","medium","low"].index(prio),
-                                                    key=f"prio_{course}_{lec}",
-                                                    label_visibility="collapsed")
-                            if new_prio != prio:
-                                meta.setdefault("priorities",{})[prio_key] = new_prio
-                                prio_changed = True
-                    # Save ONCE after all checkboxes processed
-                    if changed:
-                        save_data(data)
-                        meta = update_streak(meta)
-                        save_meta(meta)
+        # Bar chart
+        names,pcts,clrs = [],[],[]
+        for c in course_list:
+            t=len(data[c]); d=sum(1 for s in data[c].values() if s)
+            names.append(c); pcts.append(int(d/t*100) if t else 0); clrs.append(color_map[c])
+        fig = go.Figure(go.Bar(x=names, y=pcts, marker_color=clrs,
+                               text=[f"{p}%" for p in pcts], textposition="outside",
+                               textfont=dict(family="DM Mono",size=11,color=TEXTM)))
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
+                          font=dict(family="DM Sans",color=TEXTM),
+                          yaxis=dict(range=[0,130],showgrid=False,zeroline=False,showticklabels=False),
+                          xaxis=dict(showgrid=False,tickfont=dict(family="DM Mono",size=11,color=TEXTM)),
+                          margin=dict(t=30,b=5,l=0,r=0),height=210,showlegend=False,bargap=0.4)
+        st.plotly_chart(fig, use_container_width=True, key="bar")
+        st.markdown("<hr>", unsafe_allow_html=True)
+
+        # 2-column course cards
+        course_items = list(data.items())
+        for i in range(0, len(course_items), 2):
+            col_a, col_b = st.columns(2, gap="medium")
+            for col, idx in [(col_a,i),(col_b,i+1)]:
+                if idx >= len(course_items): break
+                course, lectures = course_items[idx]
+                total = len(lectures)
+                done  = sum(1 for s in lectures.values() if s)
+                pct   = done/total if total else 0
+                clr   = color_map[course]
+
+                c_evs = sorted([e for e in events if e["course"]==course
+                                and safe_date(e["date"]) >= today],
+                               key=lambda x: x["date"])[:2]
+                pills = ""
+                for ev in c_evs:
+                    ev_d = safe_date(ev["date"])
+                    diff = (ev_d - today).days
+                    pc = "#e63946" if ev["type"]=="Exam" else "#e76f51"
+                    pbg= "#fde8ea" if ev["type"]=="Exam" else "#fdeee9"
+                    lbl= "TODAY" if diff==0 else f"{diff}d"
+                    pills += (f'<span style="background:{pbg};color:{pc};font-family:DM Mono,monospace;'
+                              f'font-size:.61rem;font-weight:600;padding:2px 8px;border-radius:4px;">'
+                              f'{ev["type"]} · {lbl}</span> ')
+
+                with col:
+                    st.markdown(f"""
+                    <div style="{card_style(clr)}">
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1rem;">
+                            <div>
+                                <div style="{label_style()}margin-bottom:3px;">Course</div>
+                                <div style="font-family:'Playfair Display',serif;font-size:1.4rem;
+                                            font-weight:800;color:{TEXT};line-height:1.1;">{course}</div>
+                            </div>
+                            <div style="text-align:right;">
+                                <div style="font-family:'Playfair Display',serif;font-size:1.7rem;
+                                            font-weight:800;color:{clr};line-height:1;">{int(pct*100)}%</div>
+                                <div style="font-family:'DM Mono',monospace;font-size:.65rem;color:{TEXTD};">{done}/{total}</div>
+                            </div>
+                        </div>
+                        <div style="background:{SURF2};border-radius:99px;height:5px;margin-bottom:.9rem;overflow:hidden;">
+                            <div style="background:{clr};width:{int(pct*100)}%;height:100%;border-radius:99px;"></div>
+                        </div>
+                        <div style="display:flex;gap:5px;flex-wrap:wrap;min-height:1.3rem;">
+                            {pills if pills else f'<span style="font-size:.72rem;color:{TEXTD};font-family:DM Mono,monospace;">No upcoming events</span>'}
+                        </div>
+                    </div>""", unsafe_allow_html=True)
+
+                    with st.expander(f"Topics — {course}"):
+                        changed = False
+                        prio_changed = False
+                        for lec, is_done in lectures.items():
+                            prio_key = f"{course}::{lec}"
+                            prio = meta.get("priorities",{}).get(prio_key,"")
+                            tc, tb = st.columns([5,1])
+                            with tc:
+                                checked = st.checkbox(
+                                    f"{prio_icon(prio)} {lec}" if prio else lec,
+                                    value=is_done, key=f"chk_{course}_{lec}")
+                                if checked != is_done:
+                                    data[course][lec] = checked
+                                    changed = True
+                            with tb:
+                                new_prio = st.selectbox("Priority",["","high","medium","low"],
+                                                        index=["","high","medium","low"].index(prio),
+                                                        key=f"prio_{course}_{lec}",
+                                                        label_visibility="collapsed")
+                                if new_prio != prio:
+                                    meta.setdefault("priorities",{})[prio_key] = new_prio
+                                    prio_changed = True
+                        if changed:
+                            save_data(data)
+                            meta = update_streak(meta)
+                            save_meta(meta)
+                            st.rerun()
+                        elif prio_changed:
+                            save_meta(meta)
+                            st.rerun()
+            st.markdown("<div style='height:.4rem'></div>", unsafe_allow_html=True)
+
+    # ── TO-DO PANEL (right column) ─────────────────────────────────
+    with todo_col:
+        done_count  = sum(1 for t in todos if t["done"])
+        total_count = len(todos)
+        pct_td      = int(done_count / total_count * 100) if total_count else 0
+        ring_clr    = "#52b788" if pct_td == 100 else ACCENT
+        track_clr   = "#2a3248" if dark else "#f0ede8"
+        bg_clr      = "#161b27" if dark else "#ffffff"
+        CIRC        = 2 * 3.14159 * 28
+        offset      = CIRC * (1 - pct_td / 100)
+
+        import streamlit.components.v1 as _comp
+        _comp.html(f"""
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@800&family=DM+Mono:wght@400&family=DM+Sans:wght@500&display=swap');
+          body{{margin:0;padding:1.2rem 1rem 1rem;background:{bg_clr};font-family:'DM Sans',sans-serif;}}
+          .header{{display:flex;align-items:center;gap:14px;margin-bottom:0;}}
+          .title{{font-family:'Playfair Display',serif;font-size:1.3rem;font-weight:800;color:{"#e8eaf0" if dark else "#1a1814"};line-height:1.15;}}
+          .subtitle{{font-family:'DM Mono',monospace;font-size:.6rem;color:{"#5a6080" if dark else "#9a948c"};letter-spacing:.1em;text-transform:uppercase;margin-top:3px;}}
+          .ring{{position:relative;width:70px;height:70px;flex-shrink:0;}}
+          .ring svg{{transform:rotate(-90deg);}}
+          .ring-center{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;}}
+          .ring-pct{{font-family:'DM Mono',monospace;font-size:.8rem;font-weight:700;color:{ring_clr};line-height:1;}}
+          .ring-lbl{{font-family:'DM Mono',monospace;font-size:.42rem;color:{"#5a6080" if dark else "#9a948c"};letter-spacing:.06em;text-transform:uppercase;}}
+        </style>
+        <div class="header">
+          <div class="ring">
+            <svg width="70" height="70" viewBox="0 0 70 70">
+              <circle cx="35" cy="35" r="28" fill="none" stroke="{track_clr}" stroke-width="7"/>
+              <circle cx="35" cy="35" r="28" fill="none" stroke="{ring_clr}" stroke-width="7"
+                      stroke-linecap="round"
+                      stroke-dasharray="{CIRC:.2f}" stroke-dashoffset="{offset:.2f}"/>
+            </svg>
+            <div class="ring-center">
+              <div class="ring-pct">{pct_td}%</div>
+              <div class="ring-lbl">done</div>
+            </div>
+          </div>
+          <div>
+            <div class="title">To-Do</div>
+            <div class="subtitle">{done_count} of {total_count} done</div>
+          </div>
+        </div>
+        """, height=110)
+
+        # Add new task form
+        with st.form("todo_add_form", clear_on_submit=True):
+            new_task = st.text_input("New task", placeholder="e.g. Review Ch7 notes…",
+                                     label_visibility="collapsed")
+            if st.form_submit_button("+  Add Task", use_container_width=True):
+                if new_task.strip():
+                    add_todo(new_task)
+                    st.rerun()
+
+        st.markdown("<div style='height:.3rem'></div>", unsafe_allow_html=True)
+
+        # Task list
+        if not todos:
+            st.markdown(
+                f"<div style='font-size:.82rem;color:{TEXTD};text-align:center;"
+                f"padding:1.5rem 0;'>No tasks yet. Add one above! ✨</div>",
+                unsafe_allow_html=True)
+        else:
+            open_tasks   = [t for t in todos if not t["done"]]
+            closed_tasks = [t for t in todos if t["done"]]
+
+            for task in open_tasks:
+                tc, dc = st.columns([5, 1])
+                with tc:
+                    checked = st.checkbox(task["text"], value=False,
+                                          key=f"todo_{task['id']}")
+                    if checked:
+                        save_todo_done(task["id"], True)
                         st.rerun()
-                    elif prio_changed:
-                        save_meta(meta)
+                with dc:
+                    if st.button("×", key=f"del_todo_{task['id']}",
+                                 help="Delete task"):
+                        delete_todo(task["id"])
                         st.rerun()
-        st.markdown("<div style='height:.4rem'></div>", unsafe_allow_html=True)
+
+            if closed_tasks:
+                st.markdown(
+                    f"<div style='font-family:DM Mono,monospace;font-size:.6rem;"
+                    f"color:{TEXTD};letter-spacing:.1em;text-transform:uppercase;"
+                    f"margin:.8rem 0 .4rem;'>Completed</div>",
+                    unsafe_allow_html=True)
+                for task in closed_tasks:
+                    tc2, dc2 = st.columns([5, 1])
+                    with tc2:
+                        checked2 = st.checkbox(
+                            task["text"], value=True,
+                            key=f"todo_{task['id']}",
+                            help="Uncheck to restore")
+                        if not checked2:
+                            save_todo_done(task["id"], False)
+                            st.rerun()
+                    with dc2:
+                        if st.button("×", key=f"del_todo_{task['id']}",
+                                     help="Delete task"):
+                            delete_todo(task["id"])
+                            st.rerun()
+
+            # Clear completed button
+            if closed_tasks:
+                if st.button("🗑️  Clear completed", use_container_width=True,
+                             key="clear_done_todos"):
+                    for t in closed_tasks:
+                        delete_todo(t["id"])
+                    st.rerun()
 
 
 # ════════════════════════════════════════════════
