@@ -890,64 +890,64 @@ svg{{transform:rotate(-90deg);}}
             st.success(f"Logged {log_min} min for {log_course}!")
             st.rerun()
 
-        with col_log:
-            st.markdown(f'<div style="{label_style()}margin-bottom:.8rem;">Study Log — Last 7 Days</div>',
-                        unsafe_allow_html=True)
+    with col_log:
+        st.markdown(f'<div style="{label_style()}margin-bottom:.8rem;">Study Log — Last 7 Days</div>',
+                    unsafe_allow_html=True)
 
-            plog = meta.get("pomodoro_log", {})
-            last7     = [(today - timedelta(days=i)) for i in range(6,-1,-1)]
-            last7_str = [str(d) for d in last7]
+        plog = meta.get("pomodoro_log", {})
+        last7     = [(today - timedelta(days=i)) for i in range(6,-1,-1)]
+        last7_str = [str(d) for d in last7]
 
-            chart_data = {c: [] for c in course_list}
-            for ds in last7_str:
-                day_log = plog.get(ds, {})
-                for c in course_list:
-                    chart_data[c].append(day_log.get(c, 0))
-
-            day_labels = [d.strftime("%a %d") for d in last7]
-            fig2 = go.Figure()
+        chart_data = {c: [] for c in course_list}
+        for ds in last7_str:
+            day_log = plog.get(ds, {})
             for c in course_list:
-                if sum(chart_data[c]) > 0:
-                    fig2.add_trace(go.Bar(name=c, x=day_labels, y=chart_data[c],
-                                          marker_color=color_map[c]))
-            fig2.update_layout(
-                barmode="stack",
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(family="DM Sans", color=TEXTM),
-                yaxis=dict(title="Minutes", showgrid=True,
-                           gridcolor="rgba(42,50,72,0.19)" if dark else "rgba(226,221,214,0.5)",
-                           zeroline=False, tickfont=dict(family="DM Mono",size=10,color=TEXTD)),
-                xaxis=dict(showgrid=False, tickfont=dict(family="DM Mono",size=10,color=TEXTD)),
-                margin=dict(t=10,b=5,l=0,r=0), height=280,
-                legend=dict(font=dict(family="DM Sans",size=11,color=TEXTM), bgcolor="rgba(0,0,0,0)")
-            )
-            st.plotly_chart(fig2, use_container_width=True, key="pomo_chart")
+                chart_data[c].append(day_log.get(c, 0))
 
-            st.markdown(f'<div style="{label_style()}margin-bottom:.6rem;margin-top:.4rem;">All-Time Totals</div>',
+        day_labels = [d.strftime("%a %d") for d in last7]
+        fig2 = go.Figure()
+        for c in course_list:
+            if sum(chart_data[c]) > 0:
+                fig2.add_trace(go.Bar(name=c, x=day_labels, y=chart_data[c],
+                                      marker_color=color_map[c]))
+        fig2.update_layout(
+            barmode="stack",
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="DM Sans", color=TEXTM),
+            yaxis=dict(title="Minutes", showgrid=True,
+                       gridcolor="rgba(42,50,72,0.19)" if dark else "rgba(226,221,214,0.5)",
+                       zeroline=False, tickfont=dict(family="DM Mono",size=10,color=TEXTD)),
+            xaxis=dict(showgrid=False, tickfont=dict(family="DM Mono",size=10,color=TEXTD)),
+            margin=dict(t=10,b=5,l=0,r=0), height=280,
+            legend=dict(font=dict(family="DM Sans",size=11,color=TEXTM), bgcolor="rgba(0,0,0,0)")
+        )
+        st.plotly_chart(fig2, use_container_width=True, key="pomo_chart")
+
+        st.markdown(f'<div style="{label_style()}margin-bottom:.6rem;margin-top:.4rem;">All-Time Totals</div>',
+                    unsafe_allow_html=True)
+        totals = {}
+        for day_data in plog.values():
+            for c, m in day_data.items():
+                totals[c] = totals.get(c, 0) + m
+        if totals:
+            for c, mins in sorted(totals.items(), key=lambda x: -x[1]):
+                hrs = mins // 60; rem = mins % 60
+                time_str = f"{hrs}h {rem}m" if hrs else f"{rem}m"
+                clr     = color_map.get(c, "#888")
+                pct_bar = min(100, int(mins / max(totals.values()) * 100))
+                st.markdown(f"""
+                <div style="margin-bottom:.5rem;">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+                        <span style="font-size:.82rem;font-weight:600;color:{TEXT};">{c}</span>
+                        <span style="font-family:'DM Mono',monospace;font-size:.76rem;color:{TEXTD};">{time_str}</span>
+                    </div>
+                    <div style="background:{SURF2};border-radius:99px;height:4px;overflow:hidden;">
+                        <div style="background:{clr};width:{pct_bar}%;height:100%;border-radius:99px;"></div>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div style='font-size:.84rem;color:{TEXTD};'>No sessions logged yet.</div>",
                         unsafe_allow_html=True)
-            totals = {}
-            for day_data in plog.values():
-                for c, m in day_data.items():
-                    totals[c] = totals.get(c, 0) + m
-            if totals:
-                for c, mins in sorted(totals.items(), key=lambda x: -x[1]):
-                    hrs = mins // 60; rem = mins % 60
-                    time_str = f"{hrs}h {rem}m" if hrs else f"{rem}m"
-                    clr     = color_map.get(c, "#888")
-                    pct_bar = min(100, int(mins / max(totals.values()) * 100))
-                    st.markdown(f"""
-                    <div style="margin-bottom:.5rem;">
-                        <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-                            <span style="font-size:.82rem;font-weight:600;color:{TEXT};">{c}</span>
-                            <span style="font-family:'DM Mono',monospace;font-size:.76rem;color:{TEXTD};">{time_str}</span>
-                        </div>
-                        <div style="background:{SURF2};border-radius:99px;height:4px;overflow:hidden;">
-                            <div style="background:{clr};width:{pct_bar}%;height:100%;border-radius:99px;"></div>
-                        </div>
-                    </div>""", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<div style='font-size:.84rem;color:{TEXTD};'>No sessions logged yet.</div>",
-                            unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════
 #  PAGE 3 — CALENDAR
