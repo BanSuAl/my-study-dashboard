@@ -308,8 +308,14 @@ hr{{border-color:var(--hr)!important;}}
 </style>"""
 
 # ── session state defaults ────────────────────
-if "dark" not in st.session_state: st.session_state.dark = False
-if "pomo_running" not in st.session_state: st.session_state.pomo_running = False
+if "dark"          not in st.session_state: st.session_state.dark          = False
+if "pomo_running"  not in st.session_state: st.session_state.pomo_running  = False
+if "pomo_wall_start" not in st.session_state: st.session_state.pomo_wall_start = None  # time.time() when timer started
+if "pomo_elapsed"  not in st.session_state: st.session_state.pomo_elapsed  = 0.0       # seconds elapsed before last pause
+if "pomo_total"    not in st.session_state: st.session_state.pomo_total    = 1500
+if "pomo_course"   not in st.session_state: st.session_state.pomo_course   = None
+if "pomo_is_work"  not in st.session_state: st.session_state.pomo_is_work  = True
+if "pomo_finished" not in st.session_state: st.session_state.pomo_finished = False
 if "cal_year"  not in st.session_state: st.session_state.cal_year  = date.today().year
 if "cal_month" not in st.session_state: st.session_state.cal_month = date.today().month
 
@@ -727,314 +733,221 @@ if page == "📊  Progress":
 # ════════════════════════════════════════════════
 #  PAGE 2 — POMODORO
 # ════════════════════════════════════════════════
-elif page == "⏱️  Pomodoro":
+elif page == "\u23f1\ufe0f  Pomodoro":
+    import time as _time
     import streamlit.components.v1 as components
-    heading("Pomodoro Timer", "Focus sessions · 25 min work / 5 min break")
+    heading("Pomodoro Timer", "Focus sessions \u00b7 25 min work / 5 min break")
+
+    # ---- Server-side persistent timer -----------------------------------------
+    ss = st.session_state
+    now_wall = _time.time()
+    if ss.pomo_running and ss.pomo_wall_start is not None:
+        elapsed_now = ss.pomo_elapsed + (now_wall - ss.pomo_wall_start)
+    else:
+        elapsed_now = ss.pomo_elapsed
+    secs_left_now = max(0.0, ss.pomo_total - elapsed_now)
+
+    # Auto-finish if timer ran out while user navigated away
+    if ss.pomo_running and secs_left_now <= 0 and not ss.pomo_finished:
+        ss.pomo_running   = False
+        ss.pomo_finished  = True
+        ss.pomo_elapsed   = float(ss.pomo_total)
+        if ss.pomo_is_work and ss.pomo_course:
+            today_str = str(today)
+            mins_done = round(ss.pomo_total / 60)
+            meta.setdefault("pomodoro_log", {}).setdefault(today_str, {})
+            meta["pomodoro_log"][today_str][ss.pomo_course] = (
+                meta["pomodoro_log"][today_str].get(ss.pomo_course, 0) + mins_done)
+            meta = update_streak(meta)
+            save_meta(meta)
+        st.rerun()
 
     col_timer, col_log = st.columns([2, 3], gap="large")
 
     with col_timer:
-        pomo_course = st.selectbox("Studying for", list(data.keys()), key="pomo_course")
-        pomo_type   = st.radio("Session type", ["🍅 Work (25 min)", "☕ Break (5 min)"],
-                               horizontal=True, key="pomo_type")
+        disabled = ss.pomo_running or ss.pomo_finished
+
+        course_keys = list(data.keys())
+        default_idx = course_keys.index(ss.pomo_course) if ss.pomo_course in course_keys else 0
+        pomo_course_sel = st.selectbox("Studying for", course_keys,
+                                       index=default_idx, disabled=disabled,
+                                       key="pomo_course_sel")
+
+        pomo_type = st.radio("Session type", ["\U0001f345 Work (25 min)", "\u2615 Break (5 min)"],
+                             horizontal=True, disabled=disabled, key="pomo_type")
+
         minutes       = 25 if "Work" in pomo_type else 5
         seconds_total = minutes * 60
-        msg_text      = "Focus time — stay off your phone!" if "Work" in pomo_type else "Take a proper break ☕"
 
-        # Custom duration option
-        use_custom = st.checkbox("Custom duration", key="pomo_custom")
+        use_custom = st.checkbox("Custom duration", disabled=disabled, key="pomo_custom")
         if use_custom:
-            custom_mins = st.number_input("Minutes", min_value=1, max_value=180, value=minutes, step=1, key="pomo_custom_mins")
-            minutes = custom_mins
+            custom_mins   = st.number_input("Minutes", min_value=1, max_value=180,
+                                            value=minutes, step=1, disabled=disabled,
+                                            key="pomo_custom_mins")
+            minutes       = custom_mins
             seconds_total = minutes * 60
 
-        components.html(f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <style>
-          @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@800&family=DM+Sans:wght@500&family=DM+Mono:wght@400&display=swap');
-          * {{ margin:0; padding:0; box-sizing:border-box; }}
-          body {{
-            background: {'#161b27' if dark else '#ffffff'};
-            display: flex; flex-direction: column; align-items: center;
-            padding: 1.8rem 1rem 1.4rem; font-family: 'DM Sans', sans-serif;
-          }}
-          #pomo-ring {{
-            position: relative; width: 200px; height: 200px; margin-bottom: .8rem;
-          }}
-          #pomo-ring svg {{ transform: rotate(-90deg); }}
-          #pomo-track {{ stroke: {'#2a3248' if dark else '#f0ede8'}; }}
-          #pomo-fill  {{ stroke: {ACCENT}; transition: stroke-dashoffset 0.5s linear; stroke-dasharray: 565.5; stroke-dashoffset: 0; }}
-          #pomo-center {{
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
-            text-align: center;
-          }}
-          #pomo-time {{
-            font-family: 'Playfair Display', serif; font-size: 2.4rem;
-            font-weight: 800; color: {ACCENT}; line-height: 1; transition: color .4s;
-          }}
-          #pomo-label {{
-            font-family: 'DM Mono', monospace; font-size: .62rem;
-            color: {'#5a6080' if dark else '#9a948c'}; letter-spacing: .1em;
-            text-transform: uppercase; margin-top: 3px;
-          }}
-          #pomo-msg {{
-            font-size: .82rem; color: {'#9aa0b8' if dark else '#4a4640'};
-            margin-bottom: 1.2rem; text-align: center; max-width: 240px;
-          }}
-          .btn-row {{ display: flex; gap: .6rem; justify-content: center; flex-wrap: wrap; }}
-          .btn-primary {{
-            background: {ACCENT}; color: white; border: none; border-radius: 8px;
-            padding: .6rem 1.8rem; font-family: 'DM Sans', sans-serif;
-            font-size: .88rem; font-weight: 600; cursor: pointer;
-            transition: opacity .2s;
-          }}
-          .btn-primary:disabled {{ opacity: .5; cursor: default; }}
-          .btn-secondary {{
-            background: {'#1c2333' if dark else '#ffffff'};
-            color: {'#9aa0b8' if dark else '#4a4640'};
-            border: 1.5px solid {'#2a3248' if dark else '#e2ddd6'};
-            border-radius: 8px; padding: .6rem 1.4rem;
-            font-family: 'DM Sans', sans-serif; font-size: .88rem;
-            font-weight: 500; cursor: pointer; transition: all .15s;
-          }}
-          #pomo-done {{
-            font-size: .82rem; color: #52b788; margin-top: .8rem;
-            font-weight: 600; min-height: 1.2rem; text-align: center;
-          }}
-          #bg-note {{
-            font-size: .72rem; color: {'#5a6080' if dark else '#9a948c'};
-            margin-top: .6rem; text-align: center; max-width: 240px;
-          }}
-        </style>
-        </head>
-        <body>
+        # Control buttons
+        b1, b2 = st.columns(2)
+        with b1:
+            if not ss.pomo_running and not ss.pomo_finished:
+                if st.button("\u25b6  Start", use_container_width=True, key="pomo_btn_start"):
+                    ss.pomo_course     = pomo_course_sel
+                    ss.pomo_is_work    = "Work" in pomo_type
+                    ss.pomo_total      = float(seconds_total)
+                    ss.pomo_elapsed    = 0.0
+                    ss.pomo_wall_start = _time.time()
+                    ss.pomo_running    = True
+                    ss.pomo_finished   = False
+                    st.rerun()
+            elif ss.pomo_running:
+                if st.button("\u23f8  Pause", use_container_width=True, key="pomo_btn_pause"):
+                    ss.pomo_elapsed    = elapsed_now
+                    ss.pomo_running    = False
+                    ss.pomo_wall_start = None
+                    st.rerun()
+            else:
+                st.button("\u25b6  Start", use_container_width=True, disabled=True,
+                          key="pomo_btn_done")
+        with b2:
+            if st.button("\u21ba  Reset", use_container_width=True, key="pomo_btn_reset"):
+                ss.pomo_running    = False
+                ss.pomo_finished   = False
+                ss.pomo_elapsed    = 0.0
+                ss.pomo_wall_start = None
+                st.rerun()
 
-        <div id="pomo-ring">
-          <svg width="200" height="200" viewBox="0 0 200 200">
-            <circle id="pomo-track" cx="100" cy="100" r="90" fill="none" stroke-width="10"/>
-            <circle id="pomo-fill"  cx="100" cy="100" r="90" fill="none" stroke-width="10"
-                    stroke-linecap="round"/>
-          </svg>
-          <div id="pomo-center">
-            <div id="pomo-time">{minutes:02d}:00</div>
-            <div id="pomo-label">{'FOCUS' if 'Work' in pomo_type else 'BREAK'}</div>
-          </div>
-        </div>
+        if not ss.pomo_running and not ss.pomo_finished and ss.pomo_elapsed > 0:
+            if st.button("\u25b6  Resume", use_container_width=True, key="pomo_btn_resume"):
+                ss.pomo_wall_start = _time.time()
+                ss.pomo_running    = True
+                st.rerun()
 
-        <div id="pomo-msg">{msg_text}</div>
+        # Ring display (static SVG re-rendered each tick)
+        secs_show   = int(secs_left_now)
+        mins_disp   = secs_show // 60
+        secs_disp   = secs_show % 60
+        total_f     = float(ss.pomo_total) if ss.pomo_total else float(seconds_total)
+        pct_done    = min(1.0, elapsed_now / total_f) if total_f > 0 else 0.0
+        CIRC        = 565.49
+        ring_offset = CIRC * (1.0 - pct_done)
+        ring_color  = "#52b788" if ss.pomo_finished else ACCENT
+        track_color = "#2a3248" if dark else "#f0ede8"
+        bg_color    = "#161b27" if dark else "#ffffff"
+        lbl_color   = "#5a6080" if dark else "#9a948c"
+        status_text = ("Session complete! \u2705 Logged automatically." if ss.pomo_finished
+                       else ("\u23f8 Paused \u2014 press Resume to continue"
+                             if (not ss.pomo_running and ss.pomo_elapsed > 0)
+                             else ("\U0001f345 Focus! Stay on task." if ss.pomo_running
+                                   else "Ready \u2014 press Start")))
+        status_clr  = ("#52b788" if ss.pomo_finished
+                       else (TEXTD if not ss.pomo_running else ACCENT))
+        course_lbl  = ss.pomo_course or pomo_course_sel
+        lbl_txt     = "FOCUS" if ss.pomo_is_work else "BREAK"
 
-        <div class="btn-row">
-          <button class="btn-primary"  id="btn-start" onclick="startPomo()">▶  Start</button>
-          <button class="btn-secondary" onclick="resetPomo()">↺  Reset</button>
-        </div>
-        <div id="pomo-done"></div>
-        <div id="bg-note"></div>
+        components.html(
+            f"""<style>
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@800&family=DM+Mono:wght@400&family=DM+Sans:wght@500&display=swap');
+body{{margin:0;padding:1.2rem 1rem;background:{bg_color};display:flex;flex-direction:column;align-items:center;font-family:'DM Sans',sans-serif;}}
+#ring{{position:relative;width:200px;height:200px;margin-bottom:.7rem;}}
+svg{{transform:rotate(-90deg);}}
+#center{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;}}
+#td{{font-family:'Playfair Display',serif;font-size:2.6rem;font-weight:800;color:{ring_color};line-height:1;}}
+#lbl{{font-family:'DM Mono',monospace;font-size:.62rem;color:{lbl_color};letter-spacing:.1em;text-transform:uppercase;margin-top:3px;}}
+#status{{font-size:.82rem;font-weight:600;color:{status_clr};margin-top:.6rem;text-align:center;max-width:220px;}}
+#clbl{{font-family:'DM Mono',monospace;font-size:.72rem;color:{lbl_color};margin-top:.3rem;letter-spacing:.05em;}}
+</style>
+<div id="ring">
+<svg width="200" height="200" viewBox="0 0 200 200">
+  <circle cx="100" cy="100" r="90" fill="none" stroke="{track_color}" stroke-width="10"/>
+  <circle cx="100" cy="100" r="90" fill="none" stroke="{ring_color}" stroke-width="10"
+          stroke-linecap="round" stroke-dasharray="{CIRC:.2f}" stroke-dashoffset="{ring_offset:.2f}"/>
+</svg>
+<div id="center"><div id="td">{mins_disp:02d}:{secs_disp:02d}</div><div id="lbl">{lbl_txt}</div></div>
+</div>
+<div id="status">{status_text}</div>
+<div id="clbl">{course_lbl}</div>""",
+            height=290)
 
-        <script>
-          const TOTAL   = {seconds_total};
-          const CIRC    = 2 * Math.PI * 90;
-          const COURSE  = "{pomo_course}";
-          const IS_WORK = {'true' if 'Work' in pomo_type else 'false'};
-
-          let startTs    = null;   // timestamp when timer started
-          let elapsed    = 0;      // seconds already elapsed before current start
-          let rafId      = null;
-          let running    = false;
-          let finished   = false;
-
-          const fillEl   = document.getElementById('pomo-fill');
-          const timeEl   = document.getElementById('pomo-time');
-          const msgEl    = document.getElementById('pomo-msg');
-          const doneEl   = document.getElementById('pomo-done');
-          const bgNote   = document.getElementById('bg-note');
-          const startBtn = document.getElementById('btn-start');
-
-          fillEl.style.strokeDasharray  = CIRC;
-          fillEl.style.strokeDashoffset = 0;
-
-          function fmt(s) {{
-            s = Math.max(0, Math.round(s));
-            return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
-          }}
-
-          function updateRing(secsLeft) {{
-            const offset = CIRC * (1 - secsLeft / TOTAL);
-            fillEl.style.strokeDashoffset = offset;
-          }}
-
-          function onFinish() {{
-            if (finished) return;
-            finished = true;
-            running  = false;
-            cancelAnimationFrame(rafId);
-            timeEl.innerText   = '00:00';
-            timeEl.style.color = '#52b788';
-            fillEl.style.stroke = '#52b788';
-            fillEl.style.strokeDashoffset = CIRC;
-            msgEl.innerText    = '';
-            doneEl.innerText   = '✅ Session complete! Logging…';
-            startBtn.disabled  = true;
-            startBtn.innerText = 'Done ✓';
-            bgNote.innerText   = '';
-            try {{ new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play(); }} catch(e) {{}}
-
-            // Auto-log if work session — post message to parent Streamlit
-            if (IS_WORK) {{
-              const mins = Math.round(TOTAL / 60);
-              try {{
-                window.parent.postMessage({{
-                  type: 'pomo_complete',
-                  course: COURSE,
-                  minutes: mins
-                }}, '*');
-              }} catch(e) {{}}
-              doneEl.innerText = '✅ Logged ' + mins + ' min for ' + COURSE + '!';
-            }} else {{
-              doneEl.innerText = '✅ Break done! Start your next session.';
-            }}
-          }}
-
-          function frame() {{
-            if (!running) return;
-            const now      = performance.now();
-            const totalElapsed = elapsed + (now - startTs) / 1000;
-            const secsLeft = TOTAL - totalElapsed;
-            if (secsLeft <= 0) {{
-              onFinish();
-              return;
-            }}
-            timeEl.innerText = fmt(secsLeft);
-            updateRing(secsLeft);
-            rafId = requestAnimationFrame(frame);
-          }}
-
-          // Use Page Visibility API to keep accurate time when tab is hidden
-          document.addEventListener('visibilitychange', function() {{
-            if (!running) return;
-            if (document.hidden) {{
-              // Pause the animation frame loop (saves battery) but time keeps via timestamps
-              cancelAnimationFrame(rafId);
-            }} else {{
-              // Recalculate and resume when tab comes back
-              const now = performance.now();
-              const totalElapsed = elapsed + (now - startTs) / 1000;
-              if (totalElapsed >= TOTAL) {{
-                onFinish();
-              }} else {{
-                rafId = requestAnimationFrame(frame);
-              }}
-            }}
-          }});
-
-          function startPomo() {{
-            if (running || finished) return;
-            running  = true;
-            startTs  = performance.now();
-            startBtn.disabled  = true;
-            startBtn.innerText = 'Running…';
-            doneEl.innerText   = '';
-            bgNote.innerText   = '⚡ Timer keeps running even if you switch tabs';
-            rafId = requestAnimationFrame(frame);
-          }}
-
-          function resetPomo() {{
-            cancelAnimationFrame(rafId);
-            running = false; finished = false;
-            startTs = null; elapsed = 0;
-            timeEl.innerText  = fmt(TOTAL);
-            timeEl.style.color = '{ACCENT}';
-            fillEl.style.stroke = '{ACCENT}';
-            fillEl.style.strokeDashoffset = 0;
-            msgEl.innerText   = '{msg_text}';
-            doneEl.innerText  = '';
-            bgNote.innerText  = '';
-            startBtn.disabled  = false;
-            startBtn.innerText = '▶  Start';
-          }}
-        </script>
-        </body>
-        </html>
-        """, height=510)
+        # Tick every second while running
+        if ss.pomo_running:
+            _time.sleep(1)
+            st.rerun()
 
         st.markdown("<div style='height:.6rem'></div>", unsafe_allow_html=True)
-
-        # Log a completed session manually
         st.markdown(f'<div style="{label_style()}margin-bottom:.5rem;">Log Study Time Manually</div>',
                     unsafe_allow_html=True)
         log_course = st.selectbox("Course", list(data.keys()), key="log_course")
-        log_min    = st.number_input("Minutes studied (type any amount)", min_value=1, max_value=600,
-                                     value=25, step=5, key="log_min")
-        if st.button("✅  Add to Today's Log", use_container_width=True):
+        log_min    = st.number_input("Minutes studied (type any amount)", min_value=1,
+                                     max_value=600, value=25, step=5, key="log_min")
+        if st.button("\u2705  Add to Today's Log", use_container_width=True):
             today_str = str(today)
-            meta.setdefault("pomodoro_log",{}).setdefault(today_str,{})
+            meta.setdefault("pomodoro_log", {}).setdefault(today_str, {})
             meta["pomodoro_log"][today_str][log_course] = (
-                meta["pomodoro_log"][today_str].get(log_course,0) + log_min
-            )
+                meta["pomodoro_log"][today_str].get(log_course, 0) + log_min)
             meta = update_streak(meta)
             save_meta(meta)
             st.success(f"Logged {log_min} min for {log_course}!")
             st.rerun()
 
-    with col_log:
-        st.markdown(f'<div style="{label_style()}margin-bottom:.8rem;">Study Log — Last 7 Days</div>',
-                    unsafe_allow_html=True)
-
-        plog = meta.get("pomodoro_log", {})
-        last7     = [(today - timedelta(days=i)) for i in range(6,-1,-1)]
-        last7_str = [str(d) for d in last7]
-
-        chart_data = {c: [] for c in course_list}
-        for ds in last7_str:
-            day_log = plog.get(ds, {})
-            for c in course_list:
-                chart_data[c].append(day_log.get(c, 0))
-
-        day_labels = [d.strftime("%a %d") for d in last7]
-        fig2 = go.Figure()
-        for c in course_list:
-            if sum(chart_data[c]) > 0:
-                fig2.add_trace(go.Bar(name=c, x=day_labels, y=chart_data[c],
-                                      marker_color=color_map[c]))
-        fig2.update_layout(
-            barmode="stack",
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(family="DM Sans", color=TEXTM),
-            yaxis=dict(title="Minutes", showgrid=True,
-                       gridcolor="rgba(42,50,72,0.19)" if dark else "rgba(226,221,214,0.5)",
-                       zeroline=False, tickfont=dict(family="DM Mono",size=10,color=TEXTD)),
-            xaxis=dict(showgrid=False, tickfont=dict(family="DM Mono",size=10,color=TEXTD)),
-            margin=dict(t=10,b=5,l=0,r=0), height=280,
-            legend=dict(font=dict(family="DM Sans",size=11,color=TEXTM), bgcolor="rgba(0,0,0,0)")
-        )
-        st.plotly_chart(fig2, use_container_width=True, key="pomo_chart")
-
-        st.markdown(f'<div style="{label_style()}margin-bottom:.6rem;margin-top:.4rem;">All-Time Totals</div>',
-                    unsafe_allow_html=True)
-        totals = {}
-        for day_data in plog.values():
-            for c, m in day_data.items():
-                totals[c] = totals.get(c, 0) + m
-        if totals:
-            for c, mins in sorted(totals.items(), key=lambda x: -x[1]):
-                hrs = mins // 60; rem = mins % 60
-                time_str = f"{hrs}h {rem}m" if hrs else f"{rem}m"
-                clr     = color_map.get(c, "#888")
-                pct_bar = min(100, int(mins / max(totals.values()) * 100))
-                st.markdown(f"""
-                <div style="margin-bottom:.5rem;">
-                    <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-                        <span style="font-size:.82rem;font-weight:600;color:{TEXT};">{c}</span>
-                        <span style="font-family:'DM Mono',monospace;font-size:.76rem;color:{TEXTD};">{time_str}</span>
-                    </div>
-                    <div style="background:{SURF2};border-radius:99px;height:4px;overflow:hidden;">
-                        <div style="background:{clr};width:{pct_bar}%;height:100%;border-radius:99px;"></div>
-                    </div>
-                </div>""", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<div style='font-size:.84rem;color:{TEXTD};'>No sessions logged yet.</div>",
+        with col_log:
+            st.markdown(f'<div style="{label_style()}margin-bottom:.8rem;">Study Log — Last 7 Days</div>',
                         unsafe_allow_html=True)
+
+            plog = meta.get("pomodoro_log", {})
+            last7     = [(today - timedelta(days=i)) for i in range(6,-1,-1)]
+            last7_str = [str(d) for d in last7]
+
+            chart_data = {c: [] for c in course_list}
+            for ds in last7_str:
+                day_log = plog.get(ds, {})
+                for c in course_list:
+                    chart_data[c].append(day_log.get(c, 0))
+
+            day_labels = [d.strftime("%a %d") for d in last7]
+            fig2 = go.Figure()
+            for c in course_list:
+                if sum(chart_data[c]) > 0:
+                    fig2.add_trace(go.Bar(name=c, x=day_labels, y=chart_data[c],
+                                          marker_color=color_map[c]))
+            fig2.update_layout(
+                barmode="stack",
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(family="DM Sans", color=TEXTM),
+                yaxis=dict(title="Minutes", showgrid=True,
+                           gridcolor="rgba(42,50,72,0.19)" if dark else "rgba(226,221,214,0.5)",
+                           zeroline=False, tickfont=dict(family="DM Mono",size=10,color=TEXTD)),
+                xaxis=dict(showgrid=False, tickfont=dict(family="DM Mono",size=10,color=TEXTD)),
+                margin=dict(t=10,b=5,l=0,r=0), height=280,
+                legend=dict(font=dict(family="DM Sans",size=11,color=TEXTM), bgcolor="rgba(0,0,0,0)")
+            )
+            st.plotly_chart(fig2, use_container_width=True, key="pomo_chart")
+
+            st.markdown(f'<div style="{label_style()}margin-bottom:.6rem;margin-top:.4rem;">All-Time Totals</div>',
+                        unsafe_allow_html=True)
+            totals = {}
+            for day_data in plog.values():
+                for c, m in day_data.items():
+                    totals[c] = totals.get(c, 0) + m
+            if totals:
+                for c, mins in sorted(totals.items(), key=lambda x: -x[1]):
+                    hrs = mins // 60; rem = mins % 60
+                    time_str = f"{hrs}h {rem}m" if hrs else f"{rem}m"
+                    clr     = color_map.get(c, "#888")
+                    pct_bar = min(100, int(mins / max(totals.values()) * 100))
+                    st.markdown(f"""
+                    <div style="margin-bottom:.5rem;">
+                        <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+                            <span style="font-size:.82rem;font-weight:600;color:{TEXT};">{c}</span>
+                            <span style="font-family:'DM Mono',monospace;font-size:.76rem;color:{TEXTD};">{time_str}</span>
+                        </div>
+                        <div style="background:{SURF2};border-radius:99px;height:4px;overflow:hidden;">
+                            <div style="background:{clr};width:{pct_bar}%;height:100%;border-radius:99px;"></div>
+                        </div>
+                    </div>""", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div style='font-size:.84rem;color:{TEXTD};'>No sessions logged yet.</div>",
+                            unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════
 #  PAGE 3 — CALENDAR
