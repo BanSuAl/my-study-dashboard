@@ -116,26 +116,14 @@ def safe_date(date_str):
         return date.today()
 
 # ── Load functions ────────────────────────────
-@st.cache_data(ttl=30)
-def load_todos():
-    rows = db_get("todos", "order=created_at.asc")
-    if not isinstance(rows, list): return []
-    return [{"id": r.get("id"), "text": r.get("text",""), "done": bool(r.get("done", False))}
-            for r in rows if r.get("text")]
+def load_todos(meta_dict):
+    """Load todos from meta dict — no separate table needed."""
+    return meta_dict.get("todos", [])
 
-def save_todo_done(row_id, done):
-    db_update("todos", {"done": done}, row_id)
-    load_todos.clear()
-
-def add_todo(text):
-    db_insert("todos", {"text": text.strip(), "done": False})
-    load_todos.clear()
-
-def delete_todo(row_id):
-    try:
-        requests.delete(f"{BASE}/todos?id=eq.{row_id}", headers=HEADERS, timeout=10)
-    except Exception: pass
-    load_todos.clear()
+def save_todos(meta_dict, todos_list):
+    meta_dict["todos"] = todos_list
+    save_meta(meta_dict)
+    return meta_dict
 
 @st.cache_data(ttl=30)
 def load_data():
@@ -344,7 +332,7 @@ if "cal_month" not in st.session_state: st.session_state.cal_month = date.today(
 data   = load_data()
 events = load_events()
 meta   = load_meta()
-todos  = load_todos()
+todos  = load_todos(meta)
 today  = date.today()
 course_list = list(data.keys())
 color_map   = {c: COURSE_COLORS[i % len(COURSE_COLORS)] for i, c in enumerate(course_list)}
@@ -755,28 +743,36 @@ if page == "📊  Progress":
 
     # ── TO-DO PANEL (right column) ─────────────────────────────────
     with todo_col:
-        done_count  = sum(1 for t in todos if t["done"])
+        import uuid as _uuid
+        import streamlit.components.v1 as _comp
+
+        done_count  = sum(1 for t in todos if t.get("done"))
         total_count = len(todos)
         pct_td      = int(done_count / total_count * 100) if total_count else 0
         ring_clr    = "#52b788" if pct_td == 100 else ACCENT
         track_clr   = "#2a3248" if dark else "#f0ede8"
         bg_clr      = "#161b27" if dark else "#ffffff"
+        text_clr    = "#e8eaf0" if dark else "#1a1814"
+        sub_clr     = "#5a6080" if dark else "#9a948c"
         CIRC        = 2 * 3.14159 * 28
         offset      = CIRC * (1 - pct_td / 100)
 
-        import streamlit.components.v1 as _comp
         _comp.html(f"""
         <style>
           @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@800&family=DM+Mono:wght@400&family=DM+Sans:wght@500&display=swap');
           body{{margin:0;padding:1.2rem 1rem 1rem;background:{bg_clr};font-family:'DM Sans',sans-serif;}}
-          .header{{display:flex;align-items:center;gap:14px;margin-bottom:0;}}
-          .title{{font-family:'Playfair Display',serif;font-size:1.3rem;font-weight:800;color:{"#e8eaf0" if dark else "#1a1814"};line-height:1.15;}}
-          .subtitle{{font-family:'DM Mono',monospace;font-size:.6rem;color:{"#5a6080" if dark else "#9a948c"};letter-spacing:.1em;text-transform:uppercase;margin-top:3px;}}
+          .header{{display:flex;align-items:center;gap:14px;}}
+          .title{{font-family:'Playfair Display',serif;font-size:1.3rem;font-weight:800;
+                  color:{text_clr};line-height:1.15;}}
+          .subtitle{{font-family:'DM Mono',monospace;font-size:.6rem;color:{sub_clr};
+                     letter-spacing:.1em;text-transform:uppercase;margin-top:3px;}}
           .ring{{position:relative;width:70px;height:70px;flex-shrink:0;}}
           .ring svg{{transform:rotate(-90deg);}}
           .ring-center{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;}}
-          .ring-pct{{font-family:'DM Mono',monospace;font-size:.8rem;font-weight:700;color:{ring_clr};line-height:1;}}
-          .ring-lbl{{font-family:'DM Mono',monospace;font-size:.42rem;color:{"#5a6080" if dark else "#9a948c"};letter-spacing:.06em;text-transform:uppercase;}}
+          .ring-pct{{font-family:'DM Mono',monospace;font-size:.8rem;font-weight:700;
+                     color:{ring_clr};line-height:1;}}
+          .ring-lbl{{font-family:'DM Mono',monospace;font-size:.42rem;color:{sub_clr};
+                     letter-spacing:.06em;text-transform:uppercase;}}
         </style>
         <div class="header">
           <div class="ring">
@@ -798,39 +794,44 @@ if page == "📊  Progress":
         </div>
         """, height=110)
 
-        # Add new task form
+        # ── Add new task ──────────────────────────────────────
         with st.form("todo_add_form", clear_on_submit=True):
-            new_task = st.text_input("New task", placeholder="e.g. Review Ch7 notes…",
+            new_task = st.text_input("New task",
+                                     placeholder="e.g. Review Ch7 notes…",
                                      label_visibility="collapsed")
             if st.form_submit_button("+  Add Task", use_container_width=True):
                 if new_task.strip():
-                    add_todo(new_task)
+                    new_todos = list(todos) + [{"id": str(_uuid.uuid4()),
+                                                "text": new_task.strip(),
+                                                "done": False}]
+                    meta = save_todos(meta, new_todos)
                     st.rerun()
 
         st.markdown("<div style='height:.3rem'></div>", unsafe_allow_html=True)
 
-        # Task list
+        # ── Task list ─────────────────────────────────────────
         if not todos:
             st.markdown(
                 f"<div style='font-size:.82rem;color:{TEXTD};text-align:center;"
-                f"padding:1.5rem 0;'>No tasks yet. Add one above! ✨</div>",
+                f"padding:1.5rem 0;'>No tasks yet.<br>Add one above! ✨</div>",
                 unsafe_allow_html=True)
         else:
-            open_tasks   = [t for t in todos if not t["done"]]
-            closed_tasks = [t for t in todos if t["done"]]
+            open_tasks   = [t for t in todos if not t.get("done")]
+            closed_tasks = [t for t in todos if t.get("done")]
 
             for task in open_tasks:
                 tc, dc = st.columns([5, 1])
                 with tc:
-                    checked = st.checkbox(task["text"], value=False,
-                                          key=f"todo_{task['id']}")
-                    if checked:
-                        save_todo_done(task["id"], True)
+                    if st.checkbox(task["text"], value=False,
+                                   key=f"todo_chk_{task['id']}"):
+                        new_todos = [dict(t, done=True) if t["id"]==task["id"] else t
+                                     for t in todos]
+                        meta = save_todos(meta, new_todos)
                         st.rerun()
                 with dc:
-                    if st.button("×", key=f"del_todo_{task['id']}",
-                                 help="Delete task"):
-                        delete_todo(task["id"])
+                    if st.button("×", key=f"del_{task['id']}", help="Delete"):
+                        new_todos = [t for t in todos if t["id"] != task["id"]]
+                        meta = save_todos(meta, new_todos)
                         st.rerun()
 
             if closed_tasks:
@@ -842,27 +843,25 @@ if page == "📊  Progress":
                 for task in closed_tasks:
                     tc2, dc2 = st.columns([5, 1])
                     with tc2:
-                        checked2 = st.checkbox(
-                            task["text"], value=True,
-                            key=f"todo_{task['id']}",
-                            help="Uncheck to restore")
-                        if not checked2:
-                            save_todo_done(task["id"], False)
+                        if not st.checkbox(task["text"], value=True,
+                                           key=f"todo_chk_{task['id']}",
+                                           help="Uncheck to restore"):
+                            new_todos = [dict(t, done=False) if t["id"]==task["id"] else t
+                                         for t in todos]
+                            meta = save_todos(meta, new_todos)
                             st.rerun()
                     with dc2:
-                        if st.button("×", key=f"del_todo_{task['id']}",
-                                     help="Delete task"):
-                            delete_todo(task["id"])
+                        if st.button("×", key=f"del_{task['id']}", help="Delete"):
+                            new_todos = [t for t in todos if t["id"] != task["id"]]
+                            meta = save_todos(meta, new_todos)
                             st.rerun()
 
-            # Clear completed button
             if closed_tasks:
-                if st.button("🗑️  Clear completed", use_container_width=True,
-                             key="clear_done_todos"):
-                    for t in closed_tasks:
-                        delete_todo(t["id"])
+                if st.button("🗑️  Clear completed",
+                             use_container_width=True, key="clear_done_todos"):
+                    new_todos = [t for t in todos if not t.get("done")]
+                    meta = save_todos(meta, new_todos)
                     st.rerun()
-
 
 # ════════════════════════════════════════════════
 #  PAGE 2 — POMODORO
