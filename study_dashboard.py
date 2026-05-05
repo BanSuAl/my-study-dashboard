@@ -117,12 +117,27 @@ def safe_date(date_str):
 
 # ── Load functions ────────────────────────────
 def load_todos(meta_dict):
-    """Load todos from meta dict — no separate table needed."""
-    return meta_dict.get("todos", [])
+    """Load todos from priorities table (stored as JSON under __todos__ key)."""
+    import json as _json
+    raw = meta_dict.get("priorities", {}).get("__todos__", None)
+    if not raw:
+        return []
+    try:
+        data = _json.loads(raw)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
 
 def save_todos(meta_dict, todos_list):
+    """Save todos as JSON in the priorities table under key __todos__"""
+    import json as _json
+    try:
+        payload = _json.dumps(todos_list, ensure_ascii=False)
+        db_batch_upsert("priorities", [{"key": "__todos__", "level": payload}])
+        load_meta.clear()
+    except Exception as e:
+        st.warning(f"⚠️ Could not save todos: {e}")
     meta_dict["todos"] = todos_list
-    save_meta(meta_dict)
     return meta_dict
 
 @st.cache_data(ttl=30)
