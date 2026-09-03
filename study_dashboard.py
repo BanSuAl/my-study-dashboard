@@ -800,12 +800,25 @@ if page == "Progress":
         heading("Study Progress", f"Spring 2026 — {len(data)} courses tracked")
 
         # ── Upcoming exams ────────────────────────────────────────────
+        # ── Upcoming exams ────────────────────────────────────────────
         exam_events = upcoming_events(kind="Exam")
+        
         if exam_events:
-            rows_html = ""
+            st.markdown(f"""
+            <div style="background:{WHITE};border:1.5px solid {BORDER};
+                        border-radius:14px;padding:1.2rem 1.4rem;
+                        margin-bottom:0.5rem;">
+                <div style="font-family:'Playfair Display',serif;font-size:1.1rem;
+                            font-weight:800;color:{TEXT};margin-bottom:1rem;">
+                    📋 Upcoming Exams
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
             for e in exam_events:
                 ex_date = parse_date(e["date"])
                 diff = (ex_date - today).days
+        
                 if diff == 0:
                     bc, blb = "#e63946", "TODAY 🚨"
                 elif diff <= 3:
@@ -814,29 +827,43 @@ if page == "Progress":
                     bc, blb = "#e76f51", f"{diff}d left 🟠"
                 else:
                     bc, blb = "#2d6a4f", f"{diff}d left 🟢"
-                bbg = tint(bc, {"#e63946": "#fde8ea", "#e76f51": "#fdeee9",
-                                "#2d6a4f": "#d8f3dc"}[bc])
-                rows_html += f"""
-                <div style="display:flex;justify-content:space-between;align-items:center;
-                            padding:.6rem .8rem;margin-bottom:.4rem;background:{SURF2};
+        
+                bbg = tint(
+                    bc,
+                    {
+                        "#e63946": "#fde8ea",
+                        "#e76f51": "#fdeee9",
+                        "#2d6a4f": "#d8f3dc"
+                    }[bc]
+                )
+        
+                st.markdown(f"""
+                <div style="display:flex;justify-content:space-between;
+                            align-items:center;padding:.6rem .8rem;
+                            margin-bottom:.4rem;background:{SURF2};
                             border-radius:8px;border-left:3px solid {bc};">
+        
                     <div>
-                        <div style="font-weight:700;font-size:.9rem;color:{TEXT};">{esc(e['title'])}</div>
+                        <div style="font-weight:700;font-size:.9rem;color:{TEXT};">
+                            {esc(e['title'])}
+                        </div>
+        
                         <div style="font-size:.75rem;color:{TEXTD};margin-top:2px;">
-                            {esc(e['course'])} · {ex_date.strftime('%A, %b %d %Y')}
+                            {esc(e['course'])} ·
+                            {ex_date.strftime('%A, %b %d %Y')}
                         </div>
                     </div>
-                    <div style="background:{bbg};color:{bc};font-family:'DM Mono',monospace;
-                                font-size:.75rem;font-weight:700;padding:4px 10px;border-radius:6px;
-                                white-space:nowrap;">{blb}</div>
-                </div>"""
-            st.markdown(f"""
-            <div style="background:{WHITE};border:1.5px solid {BORDER};border-radius:14px;
-                        padding:1.2rem 1.4rem;margin-bottom:1.5rem;">
-                <div style="font-family:'Playfair Display',serif;font-size:1.1rem;
-                            font-weight:800;color:{TEXT};margin-bottom:1rem;">📋 Upcoming Exams</div>
-                {rows_html}
-            </div>""", unsafe_allow_html=True)
+        
+                    <div style="background:{bbg};color:{bc};
+                                font-family:'DM Mono',monospace;
+                                font-size:.75rem;font-weight:700;
+                                padding:4px 10px;border-radius:6px;
+                                white-space:nowrap;">
+                        {blb}
+                    </div>
+        
+                </div>
+                """, unsafe_allow_html=True)
 
 
         # ── Achievements ──────────────────────────────────────────────
